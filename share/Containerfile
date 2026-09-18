@@ -1,0 +1,63 @@
+# airlock image: Claude Code plus the usual dev tooling, running as an
+# unprivileged user whose home is a mounted, per-directory volume.
+FROM docker.io/library/node:22-bookworm
+
+ARG AIRLOCK_BUILD=dev
+LABEL airlock.build="${AIRLOCK_BUILD}" \
+      org.opencontainers.image.title="airlock" \
+      org.opencontainers.image.description="Isolated container for Claude Code"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      build-essential \
+      ca-certificates \
+      curl \
+      fd-find \
+      git \
+      iproute2 \
+      jq \
+      less \
+      nano \
+      nftables \
+      openssh-client \
+      procps \
+      python3 \
+      python3-pip \
+      python3-venv \
+      ripgrep \
+      sudo \
+ && rm -rf /var/lib/apt/lists/* \
+ && ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+
+# The node image ships a uid 1000 user; replace it with "claude" so the
+# keep-id mapping (host user -> uid 1000) lands on a real account.
+RUN userdel -r node \
+ && useradd --create-home --uid 1000 --shell /bin/bash claude \
+ && printf 'claude ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/claude \
+ && chmod 0440 /etc/sudoers.d/claude
+
+# Claude Code is installed as root here; updates go into the user's home via
+# `airlock :update`, which is why the bundled auto-updater stays off.
+RUN npm install -g @anthropic-ai/claude-code \
+ && npm cache clean --force
+
+ENV HOME=/home/claude \
+    SHELL=/bin/bash \
+    LANG=C.UTF-8 \
+    NPM_CONFIG_PREFIX=/home/claude/.npm-global \
+    DISABLE_AUTOUPDATER=1 \
+    PATH=/home/claude/.npm-global/bin:/home/claude/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# /home/claude is a mount point at runtime, so shell config has to live
+# outside it and be pulled in from the system-wide startup files.
+COPY bashrc /etc/airlock/bashrc
+RUN printf '\n# airlock\nif [ -f /etc/airlock/bashrc ]; then . /etc/airlock/bashrc; fi\n' \
+      >> /etc/bash.bashrc \
+ && printf '# airlock\nif [ -n "$BASH_VERSION" ] && [ -f /etc/airlock/bashrc ]; then . /etc/airlock/bashrc; fi\n' \
+      > /etc/profile.d/airlock.sh
+
+USER claude
+WORKDIR /home/claude
+CMD ["sleep", "infinity"]
