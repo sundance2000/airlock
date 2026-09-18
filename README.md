@@ -32,33 +32,36 @@ the installer warns you if it does not. `./install.sh --no-link` skips the link.
 
 | | |
 |---|---|
-| `claude [args]` | start here; without arguments it resumes the last session |
-| `claude shell` | a zsh shell in a container of its own |
+| `claude` | start here and resume the last session |
 | `claude update` | rebuild the image with the current Claude Code |
-| `claude reset` | delete this folder's containers and home |
+| `claude reset` | delete this folder's container and home |
 
-These four words are taken by airlock, so `claude update` rebuilds the image
-instead of reaching Claude Code's own updater. Everything else is passed
-through unchanged, `claude mcp list` and `claude --model opus` included.
+`update` and `reset` are the only words airlock takes; `update` therefore
+rebuilds the image instead of reaching Claude Code's own updater. Everything
+else is passed through unchanged, `claude mcp list` and `claude --model opus`
+included.
 
 ## Containers that stop with the terminal
 
-Each invocation is a `podman run -it` (or a `podman start -ai` when the
-container is already there). It runs in the foreground: close the terminal and
-the container stops — but it is kept, so `sudo apt install` inside it is still
-there next time. Two containers per folder, both usable at once:
-`airlock-<name>-<hash>` for Claude and `-shell` for `claude shell`.
+A bare `claude` starts the container in the foreground and attaches to it, so
+closing the terminal stops it. The container is kept, and the next `claude`
+finds it and restarts it — with everything `sudo apt install` put in it. One
+container per folder, named `airlock-<name>-<hash>`; list them with
+`podman ps -a --filter name=airlock-`.
 
-A container remembers the command it was created with, so passing different
-arguments (`claude --model opus`) recreates the Claude one; a bare `claude`
-reuses it. List them with `podman ps -a --filter name=airlock-`.
+A container keeps the command it was created with, which is why arguments
+replace it: `claude --model opus` builds a new container running exactly that,
+and every bare `claude` afterwards restarts it with those arguments still in
+place. `claude reset` gets you back to a plain one. Only one terminal at a
+time per folder — a second is refused rather than attached to the first one's
+tty.
 
 Two directories on your Mac hold what must outlive the containers:
 
 ```
 ~/.local/share/airlock/
 ├── claude/          -> ~/.claude in every container: login, settings, sessions
-└── <hash>/home/     -> ~ in this folder's containers: shell history, pip --user
+└── <hash>/home/     -> ~ in this folder's container: shell history, pip --user
 ```
 
 Because `~/.claude` is shared, you log in **once** and every folder is logged
@@ -112,7 +115,8 @@ ordinary internet traffic and is not covered by these rules.
 
 `tests/acceptance.sh` checks the above against real containers: internet up,
 private ranges down, `sudo nft flush ruleset` denied, mount isolation, file
-ownership, nothing left running afterwards. `shellcheck` runs in CI.
+ownership. It starts its own throwaway containers with the same flags, so it
+does not touch any container of yours. `shellcheck` runs in CI.
 
 ## License
 
