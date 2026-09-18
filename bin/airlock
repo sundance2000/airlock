@@ -1,56 +1,38 @@
 #!/usr/bin/env bash
 # airlock - run Claude Code isolated in a Podman container (macOS).
-# Works with the bash 3.2 that ships with macOS.
+# Written for the bash 3.2 that ships with macOS.
 set -euo pipefail
 
-IMAGE="${AIRLOCK_IMAGE:-localhost/airlock:latest}"
-DATA="${XDG_DATA_HOME:-$HOME/.local/share}/airlock"
-SHARED="$DATA/claude"   # login, settings and sessions, shared by all folders
+IMAGE="${AIRLOCK_IMAGE:-localhost/airlock:latest}"       # the image we build and run
+DATA="${XDG_DATA_HOME:-$HOME/.local/share}/airlock"      # everything airlock keeps on disk
+SHARED="$DATA/claude"                                    # login, settings and sessions, shared by all folders
+DIR=$(pwd -P)                                            # the project, mounted at this very path
+HASH=$(printf '%s' "$DIR" | shasum -a 256 | cut -c1-12)  # short id of this folder
+BOX="$DATA/$HASH/home"                                   # this folder's container home
+SHARE="${AIRLOCK_SHARE:-}"                               # Containerfile, zshrc and egress.nft
 
 die() { printf 'airlock: %s\n' "$*" >&2; exit 1; }
 
 # Copy host -> container, for files and directories alike.
 copy() { [ -e "$1" ] || return 0; rm -rf "${2:?}/$(basename "$1")"; cp -R "$1" "$2"; }
 
-# --- where am I ------------------------------------------------------------
-
-DIR=$(pwd -P)
 case "$DIR" in
     "/" | "$(cd -P "$HOME" && pwd -P)") die "not here - cd into a project directory" ;;
 esac
 
-HASH=$(printf '%s' "$DIR" | shasum -a 256 | cut -c1-12)
-NAME="airlock-$(basename "$DIR" | tr -cd 'a-zA-Z0-9_.-' | cut -c1-30)-$HASH"
-BOX="$DATA/$HASH/home"  # this folder's container home
-
-SHARE="${AIRLOCK_SHARE:-}"
 if [ -z "$SHARE" ]; then
-    for d in "$(dirname "$0")/../share" "$DATA/dist"; do
+    for d in "$(dirname "$0")/../share" "$DATA/dist"; do   # d: candidate share directory
         if [ -f "$d/Containerfile" ]; then SHARE=$(cd -P "$d" && pwd); break; fi
     done
 fi
 [ -n "$SHARE" ] || die "share files not found - set AIRLOCK_SHARE"
 
-# --- container -------------------------------------------------------------
+build() { podman build "$@" -t "$IMAGE" -f "$SHARE/Containerfile" "$SHARE"; }
 
-build() {
-    podman build -t "$IMAGE" -f "$SHARE/Containerfile" "$SHARE"
-}
-
-start() {
-    podman start "$NAME" >/dev/null
-    # A new start means a new network namespace, so the rules go on again.
-    # The helper is the only thing that ever gets NET_ADMIN.
-    podman run --rm -i --network "container:$NAME" --userns "container:$NAME" \
-        --user 0:0 --cap-add NET_ADMIN --entrypoint sh "$IMAGE" \
-        -c 'nft -f - && nft list table inet airlock >/dev/null' \
-        < "$SHARE/egress.nft" \
-        || { podman stop -t 2 "$NAME" >/dev/null 2>&1; die "egress rules failed - container stopped"; }
-}
-
-ready() {
+# One interactive container per run, gone as soon as the terminal is. The image
+# entrypoint puts the egress rules up before it hands over to Claude.
+launch() {
     podman image exists "$IMAGE" || build
-
     mkdir -p "$SHARED" "$BOX"
     # The host wins for settings; login and sessions live in the container.
     copy "$HOME/.claude/settings.json" "$SHARED"
@@ -58,63 +40,32 @@ ready() {
     copy "$HOME/.claude/commands" "$SHARED"
     copy "$HOME/.claude/agents" "$SHARED"
     copy "$HOME/.zshrc" "$BOX"
-
-    if ! podman container exists "$NAME"; then
-        podman create --name "$NAME" --init \
-            --userns "keep-id:uid=1000,gid=1000" \
-            --cap-drop NET_ADMIN,NET_RAW \
-            --dns 9.9.9.9 --dns 1.1.1.1 \
-            --sysctl net.ipv6.conf.all.disable_ipv6=1 \
-            -v "$DIR:$DIR" -v "$BOX:/home/claude" -v "$SHARED:/home/claude/.claude" \
-            -w "$DIR" "$IMAGE" sleep infinity >/dev/null
-    fi
-    [ "$(podman inspect -f '{{.State.Running}}' "$NAME")" = "true" ] || start
+    exec podman run --rm -it \
+        --label "airlock=$DIR" \
+        --userns "keep-id:uid=1000,gid=1000" \
+        --cap-add NET_ADMIN \
+        --dns 9.9.9.9 --dns 1.1.1.1 \
+        --sysctl net.ipv6.conf.all.disable_ipv6=1 \
+        -e "TERM=${TERM:-xterm-256color}" \
+        -v "$DIR:$DIR" -v "$BOX:/home/claude" -v "$SHARED:/home/claude/.claude" \
+        -w "$DIR" "$IMAGE" "$@"
 }
-
-box() {
-    local tty=-i
-    [ -t 0 ] && tty=-it
-    exec podman exec "$tty" -e "TERM=${TERM:-xterm-256color}" -w "$DIR" "$NAME" "$@"
-}
-
-# Claude names its session directory after the path, non-letters turned into dashes.
-resume() {
-    local f
-    for f in "$SHARED/projects/$(printf '%s' "$DIR" | tr -c 'a-zA-Z0-9' '-')"/*.jsonl; do
-        [ -e "$f" ] && return 0
-    done
-    return 1
-}
-
-# --- commands --------------------------------------------------------------
 
 case "${1:-}" in
-    :shell)
-        ready; box zsh ;;
-    :update)
-        ready
-        podman exec -it "$NAME" sudo sh -c \
-            'curl -fsSL https://claude.ai/install.sh | HOME=/opt/claude bash' ;;
-    :rebuild)
-        build; printf 'airlock: rebuilt - run "airlock :reset" in a folder to use it there\n' ;;
-    :reset)
-        printf 'delete container and home for %s? [y/N] ' "$DIR"
-        read -r a
-        case "$a" in
-            y|Y) podman rm -f "$NAME" >/dev/null 2>&1 || true; rm -rf "${DATA:?}/$HASH" ;;
-        esac ;;
-    :help)
+    shell)  shift; launch zsh "$@" ;;
+    update) build --build-arg "REBUILD=$(date +%s)" ;;
+    reset)
+        printf 'delete the container home for %s? [y/N] ' "$DIR"
+        read -r answer                                   # answer: y deletes, anything else keeps
+        case "$answer" in y|Y) rm -rf "${DATA:?}/$HASH" ;; esac ;;
+    help)
         cat <<'USAGE'
-claude [args]   start Claude Code here, resuming the last session
-claude :shell   a shell in the same container
-claude :update  update Claude Code in the container
-claude :rebuild rebuild the image
-claude :reset   delete this folder's container and home
+claude [args]   start Claude Code here; without arguments it resumes the last session
+claude shell    a zsh shell in a container of its own
+claude update   rebuild the image with the current Claude Code
+claude reset    delete this folder's container home
 USAGE
         ;;
-    :*) die "unknown: $1 (try :help)" ;;
-    *)
-        ready
-        if [ "$#" -eq 0 ] && resume; then set -- --continue; fi
-        box claude "$@" ;;
+    "")     launch claude --continue ;;
+    *)      launch claude "$@" ;;
 esac

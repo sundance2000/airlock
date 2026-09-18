@@ -9,8 +9,8 @@ cd ~/code/my-project
 claude
 ```
 
-That's it. The container for this folder is created on first use, started if
-needed, and the last session in this folder is resumed automatically.
+The container starts, resumes the last session in this folder, and is gone
+again the moment you close the terminal.
 
 > Unofficial community tool, not affiliated with Anthropic.
 
@@ -32,18 +32,30 @@ the installer warns you if it does not. `./install.sh --no-link` skips the link.
 
 | | |
 |---|---|
-| `claude [args]` | start here, resume the last session; arguments are passed through |
-| `claude :shell` | a zsh shell in the same container, alongside Claude |
-| `claude :update` | update Claude Code inside the container |
-| `claude :rebuild` | rebuild the image |
-| `claude :reset` | delete this folder's container and home |
+| `claude [args]` | start here; without arguments it resumes the last session |
+| `claude shell` | a zsh shell in a container of its own |
+| `claude update` | rebuild the image with the current Claude Code |
+| `claude reset` | delete this folder's container home |
 
-## Login and settings
+These four words are taken by airlock, so `claude update` rebuilds the image
+instead of reaching Claude Code's own updater. Everything else is passed
+through unchanged, `claude mcp list` and `claude --model opus` included.
 
-You log in **once**. `~/.local/share/airlock/claude/` is mounted as
-`~/.claude` into every container, so the login, your settings and all sessions
-are shared across folders — while sessions still belong to the folder they were
-started in, because Claude Code keys them by path.
+## One container per run
+
+Each invocation is a single `podman run --rm -it`. Nothing keeps running in the
+background: close the terminal and the container is gone, along with anything
+`sudo apt install` put in it. What survives lives in two directories on your Mac:
+
+```
+~/.local/share/airlock/
+├── claude/          -> ~/.claude in every container: login, settings, sessions
+└── <hash>/home/     -> ~ in this folder's container: shell history, pip --user
+```
+
+Because `~/.claude` is shared, you log in **once** and every folder is logged
+in. Sessions still belong to the folder they were started in — Claude Code keys
+them by path — which is why a bare `claude` continues where you left off.
 
 On every start these are copied from your Mac into the container, with the Mac
 as the source of truth:
@@ -51,15 +63,10 @@ as the source of truth:
 * `~/.claude/settings.json`, `~/.claude/CLAUDE.md`, `~/.claude/commands/`, `~/.claude/agents/`
 * `~/.zshrc`
 
-Edit them on the Mac, not in the container — a copy inside gets overwritten on
+Edit them on the Mac, not in the container — a copy inside is overwritten on
 the next start. Anything in your `~/.zshrc` that points at Homebrew or
 oh-my-zsh will not resolve inside the container; the container's own history
 and prompt settings are applied before your file is read, so they survive.
-
-`~/.local/share/airlock/<hash>/home/` is the rest of the home, one per folder:
-shell history and anything installed with `pip install --user`. Packages from
-`sudo apt install` live in the container and survive stop/start, but not
-`:reset`.
 
 ## Security model
 
@@ -70,13 +77,19 @@ NAS or a service on your Mac.
 What it does not protect against: a container escape. This is rootless Podman,
 not a hypervisor. Do not run deliberately hostile code in it.
 
+The container starts as root with `CAP_NET_ADMIN` and runs one entrypoint:
+
+```sh
+nft -f /etc/airlock/egress.nft
+exec setpriv --reuid=1000 --regid=1000 --init-groups \
+    --bounding-set=-net_admin,-net_raw -- "$@"
+```
+
 The rules in `share/egress.nft` reject every private range (RFC1918, CGNAT,
-link-local, loopback, multicast and the IPv6 equivalents) and are applied
-inside the container's network namespace by a short-lived helper that has
-`CAP_NET_ADMIN`. The container itself runs with `--cap-drop NET_ADMIN,NET_RAW`,
-so nothing inside it — not even `sudo` — can change them. Applying and
-verifying happens on every start; if it fails, the container is stopped and
-nothing runs.
+link-local, loopback, multicast and the IPv6 equivalents). Dropping the two
+capabilities from the **bounding set** is permanent and inherited by every
+later process, so `sudo` inside the container cannot get them back and cannot
+touch the rules. If `nft` fails, the entrypoint exits and Claude never starts.
 
 DNS uses `9.9.9.9` and `1.1.1.1` because your router's resolver sits in a
 blocked range. IPv6 is off inside the container. Files created in the container
@@ -88,9 +101,9 @@ ordinary internet traffic and is not covered by these rules.
 
 ## Tests
 
-`tests/acceptance.sh` checks the above against a real container: internet up,
+`tests/acceptance.sh` checks the above against real containers: internet up,
 private ranges down, `sudo nft flush ruleset` denied, mount isolation, file
-ownership. `shellcheck` runs in CI.
+ownership, nothing left running. `shellcheck` runs in CI.
 
 ## License
 

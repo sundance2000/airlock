@@ -1,9 +1,5 @@
-# Internet yes, private networks no. Applied by a helper container that holds
-# NET_ADMIN; the airlock container itself has none and cannot undo this.
+# Internet yes, private networks no. Applied by the entrypoint at startup.
 # reject, not drop, so tools fail at once instead of hanging.
-
-table inet airlock
-delete table inet airlock
 
 table inet airlock {
     chain output {

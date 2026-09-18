@@ -10,8 +10,10 @@ RUN useradd --create-home --uid 1000 --shell /bin/zsh claude \
  && printf 'claude ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/claude \
  && chmod 0440 /etc/sudoers.d/claude
 
+# `airlock update` passes a new value here to reinstall Claude Code.
+ARG REBUILD=0
 # Native install, no node and no npm. It lands outside /home/claude because
-# that is a mount at runtime; `airlock :update` reruns this installer.
+# that path is a mount at runtime.
 RUN mkdir -p /opt/claude \
  && curl -fsSL https://claude.ai/install.sh | HOME=/opt/claude bash \
  && ln -sf /opt/claude/.local/bin/claude /usr/local/bin/claude
@@ -26,7 +28,10 @@ ENV HOME=/home/claude \
 # /home/claude is a mount at runtime, so this has to live outside it.
 # The user's own ~/.zshrc is read afterwards and wins.
 COPY zshrc /etc/zsh/zshrc
+COPY egress.nft /etc/airlock/egress.nft
+COPY entrypoint /usr/local/bin/airlock-entrypoint
+RUN chmod 0755 /usr/local/bin/airlock-entrypoint
 
-USER claude
-WORKDIR /home/claude
-CMD ["sleep", "infinity"]
+# Starts as root for the rules, drops to uid 1000 for everything after.
+ENTRYPOINT ["/usr/local/bin/airlock-entrypoint"]
+CMD ["claude"]
