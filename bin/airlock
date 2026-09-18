@@ -9,6 +9,7 @@ SHARED="$DATA/claude"                                    # login, settings and s
 DIR=$(pwd -P)                                            # the project, mounted at this very path
 HASH=$(printf '%s' "$DIR" | shasum -a 256 | cut -c1-12)  # short id of this folder
 BOX="$DATA/$HASH/home"                                   # this folder's container home
+NAME="airlock-$(basename "$DIR" | tr -cd 'a-zA-Z0-9_.-')-$HASH"   # this folder's container
 SHARE="${AIRLOCK_SHARE:-}"                               # Containerfile, zshrc and egress.nft
 
 die() { printf 'airlock: %s\n' "$*" >&2; exit 1; }
@@ -29,9 +30,14 @@ fi
 
 build() { podman build "$@" -t "$IMAGE" -f "$SHARE/Containerfile" "$SHARE"; }
 
-# One interactive container per run, gone as soon as the terminal is. The image
-# entrypoint puts the egress rules up before it hands over to Claude.
+# Interactive and in the foreground: the container stops with the terminal but
+# stays around, so `sudo apt install` survives. Restarting reruns the image
+# entrypoint, which puts the egress rules back up in the fresh namespace.
+# A container remembers the command it was made with, so a different one needs
+# a new container.
 launch() {
+    local name=$1                                        # container to run in
+    shift
     podman image exists "$IMAGE" || build
     mkdir -p "$SHARED" "$BOX"
     # The host wins for settings; login and sessions live in the container.
@@ -40,8 +46,11 @@ launch() {
     copy "$HOME/.claude/commands" "$SHARED"
     copy "$HOME/.claude/agents" "$SHARED"
     copy "$HOME/.zshrc" "$BOX"
-    exec podman run --rm -it \
-        --label "airlock=$DIR" \
+    if [ "$(podman inspect -f '{{index .Config.Labels "cmd"}}' "$name" 2>/dev/null || true)" = "$*" ]; then
+        exec podman start --attach --interactive "$name"
+    fi
+    podman rm -f "$name" >/dev/null 2>&1 || true
+    exec podman run -it --name "$name" --label "cmd=$*" \
         --userns "keep-id:uid=1000,gid=1000" \
         --cap-add NET_ADMIN \
         --dns 9.9.9.9 --dns 1.1.1.1 \
@@ -52,20 +61,23 @@ launch() {
 }
 
 case "${1:-}" in
-    shell)  shift; launch zsh "$@" ;;
+    shell)  shift; launch "$NAME-shell" zsh "$@" ;;
     update) build --build-arg "REBUILD=$(date +%s)" ;;
     reset)
-        printf 'delete the container home for %s? [y/N] ' "$DIR"
+        printf 'delete the container and home for %s? [y/N] ' "$DIR"
         read -r answer                                   # answer: y deletes, anything else keeps
-        case "$answer" in y|Y) rm -rf "${DATA:?}/$HASH" ;; esac ;;
+        case "$answer" in
+            y|Y) podman rm -f "$NAME" "$NAME-shell" >/dev/null 2>&1 || true
+                 rm -rf "${DATA:?}/$HASH" ;;
+        esac ;;
     help)
         cat <<'USAGE'
 claude [args]   start Claude Code here; without arguments it resumes the last session
-claude shell    a zsh shell in a container of its own
+claude shell    a zsh shell in a container of its own, usable while Claude runs
 claude update   rebuild the image with the current Claude Code
-claude reset    delete this folder's container home
+claude reset    delete this folder's containers and home
 USAGE
         ;;
-    "")     launch claude --continue ;;
-    *)      launch claude "$@" ;;
+    "")     launch "$NAME" claude --continue ;;
+    *)      launch "$NAME" claude "$@" ;;
 esac

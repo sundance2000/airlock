@@ -9,8 +9,8 @@ cd ~/code/my-project
 claude
 ```
 
-The container starts, resumes the last session in this folder, and is gone
-again the moment you close the terminal.
+The container starts, resumes the last session in this folder, and stops again
+when you close the terminal.
 
 > Unofficial community tool, not affiliated with Anthropic.
 
@@ -35,22 +35,30 @@ the installer warns you if it does not. `./install.sh --no-link` skips the link.
 | `claude [args]` | start here; without arguments it resumes the last session |
 | `claude shell` | a zsh shell in a container of its own |
 | `claude update` | rebuild the image with the current Claude Code |
-| `claude reset` | delete this folder's container home |
+| `claude reset` | delete this folder's containers and home |
 
 These four words are taken by airlock, so `claude update` rebuilds the image
 instead of reaching Claude Code's own updater. Everything else is passed
 through unchanged, `claude mcp list` and `claude --model opus` included.
 
-## One container per run
+## Containers that stop with the terminal
 
-Each invocation is a single `podman run --rm -it`. Nothing keeps running in the
-background: close the terminal and the container is gone, along with anything
-`sudo apt install` put in it. What survives lives in two directories on your Mac:
+Each invocation is a `podman run -it` (or a `podman start -ai` when the
+container is already there). It runs in the foreground: close the terminal and
+the container stops — but it is kept, so `sudo apt install` inside it is still
+there next time. Two containers per folder, both usable at once:
+`airlock-<name>-<hash>` for Claude and `-shell` for `claude shell`.
+
+A container remembers the command it was created with, so passing different
+arguments (`claude --model opus`) recreates the Claude one; a bare `claude`
+reuses it. List them with `podman ps -a --filter name=airlock-`.
+
+Two directories on your Mac hold what must outlive the containers:
 
 ```
 ~/.local/share/airlock/
 ├── claude/          -> ~/.claude in every container: login, settings, sessions
-└── <hash>/home/     -> ~ in this folder's container: shell history, pip --user
+└── <hash>/home/     -> ~ in this folder's containers: shell history, pip --user
 ```
 
 Because `~/.claude` is shared, you log in **once** and every folder is logged
@@ -77,7 +85,8 @@ NAS or a service on your Mac.
 What it does not protect against: a container escape. This is rootless Podman,
 not a hypervisor. Do not run deliberately hostile code in it.
 
-The container starts as root with `CAP_NET_ADMIN` and runs one entrypoint:
+Every start — the first one and every restart — runs the image entrypoint as
+root with `CAP_NET_ADMIN`, in a fresh network namespace:
 
 ```sh
 nft -f /etc/airlock/egress.nft
@@ -103,7 +112,7 @@ ordinary internet traffic and is not covered by these rules.
 
 `tests/acceptance.sh` checks the above against real containers: internet up,
 private ranges down, `sudo nft flush ruleset` denied, mount isolation, file
-ownership, nothing left running. `shellcheck` runs in CI.
+ownership, nothing left running afterwards. `shellcheck` runs in CI.
 
 ## License
 

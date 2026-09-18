@@ -18,7 +18,9 @@ check() {
 
 mkdir -p "$PROJ"
 HASH=$(printf '%s' "$(cd "$PROJ" && pwd -P)" | shasum -a 256 | cut -c1-12)  # its state id
-trap 'rm -rf "$PROJ" "${XDG_DATA_HOME:-$HOME/.local/share}/airlock/$HASH"' EXIT
+NAME="airlock-$(basename "$PROJ")-$HASH"                                    # its containers
+trap 'podman rm -f "$NAME" "$NAME-shell" >/dev/null 2>&1;
+      rm -rf "$PROJ" "${XDG_DATA_HOME:-$HOME/.local/share}/airlock/$HASH"' EXIT
 
 echo "network"
 check "internet reachable"          pass "curl -sSI -m 10 https://api.anthropic.com"
@@ -45,7 +47,7 @@ else
 fi
 
 echo "lifetime"
-if [ -z "$(podman ps -q --filter "label=airlock=$PROJ")" ]; then
+if [ -z "$(podman ps -q --filter "name=$NAME")" ]; then
     ok "no container left running"
 else
     bad "a container is still running"
