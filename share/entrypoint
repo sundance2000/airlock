@@ -1,0 +1,8 @@
+#!/bin/sh
+# Put the egress rules up while we still have NET_ADMIN, then drop that
+# capability for good - not even sudo can get it back - and become the user.
+# If the rules fail to apply, the container exits before Claude ever starts.
+set -e
+nft -f /etc/airlock/egress.nft
+exec setpriv --reuid=1000 --regid=1000 --init-groups \
+    --bounding-set=-net_admin,-net_raw -- "$@"

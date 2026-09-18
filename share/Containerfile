@@ -1,0 +1,37 @@
+FROM docker.io/library/python:3.13-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential ca-certificates curl fd-find git jq less nano nftables \
+      openssh-client procps ripgrep sudo zsh \
+ && rm -rf /var/lib/apt/lists/* \
+ && ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+
+RUN useradd --create-home --uid 1000 --shell /bin/zsh claude \
+ && printf 'claude ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/claude \
+ && chmod 0440 /etc/sudoers.d/claude
+
+# `airlock update` passes a new value here to reinstall Claude Code.
+ARG REBUILD=0
+# Native install, no node and no npm. It lands outside /home/claude because
+# that path is a mount at runtime.
+RUN mkdir -p /opt/claude \
+ && curl -fsSL https://claude.ai/install.sh | HOME=/opt/claude bash \
+ && ln -sf /opt/claude/.local/bin/claude /usr/local/bin/claude
+
+ENV HOME=/home/claude \
+    SHELL=/bin/zsh \
+    LANG=C.UTF-8 \
+    DISABLE_AUTOUPDATER=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PATH=/home/claude/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# /home/claude is a mount at runtime, so this has to live outside it.
+# The user's own ~/.zshrc is read afterwards and wins.
+COPY zshrc /etc/zsh/zshrc
+COPY egress.nft /etc/airlock/egress.nft
+COPY entrypoint /usr/local/bin/airlock-entrypoint
+RUN chmod 0755 /usr/local/bin/airlock-entrypoint
+
+# Starts as root for the rules, drops to uid 1000 for everything after.
+ENTRYPOINT ["/usr/local/bin/airlock-entrypoint"]
+CMD ["claude"]

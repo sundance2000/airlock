@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# airlock - run Claude Code isolated in a Podman container (macOS).
+# Written for the bash 3.2 that ships with macOS.
+set -euo pipefail
+
+IMAGE="${AIRLOCK_IMAGE:-localhost/airlock:latest}"       # the image we build and run
+DATA="${XDG_DATA_HOME:-$HOME/.local/share}/airlock"      # everything airlock keeps on disk
+SHARED="$DATA/claude"                                    # login, settings and sessions, shared by all folders
+DIR=$(pwd -P)                                            # the project, mounted at this very path
+HASH=$(printf '%s' "$DIR" | shasum -a 256 | cut -c1-12)  # short id of this folder
+BOX="$DATA/$HASH/home"                                   # this folder's container home
+NAME="airlock-$(basename "$DIR" | tr -cd 'a-zA-Z0-9_.-')-$HASH"   # this folder's container
+SHARE="${AIRLOCK_SHARE:-}"                               # Containerfile, zshrc and egress.nft
+
+die() { printf 'airlock: %s\n' "$*" >&2; exit 1; }
+
+# Copy host -> container, for files and directories alike.
+copy() { [ -e "$1" ] || return 0; rm -rf "${2:?}/$(basename "$1")"; cp -R "$1" "$2"; }
+
+build() { podman build "$@" -t "$IMAGE" -f "$SHARE/Containerfile" "$SHARE"; }
+
+case "$DIR" in
+    "/" | "$(cd -P "$HOME" && pwd -P)") die "not here - cd into a project directory" ;;
+esac
+
+if [ -z "$SHARE" ]; then
+    for d in "$(dirname "$0")/../share" "$DATA/dist"; do   # d: candidate share directory
+        if [ -f "$d/Containerfile" ]; then SHARE=$(cd -P "$d" && pwd); break; fi
+    done
+fi
+[ -n "$SHARE" ] || die "share files not found - set AIRLOCK_SHARE"
+
+case "${1:-}" in
+    update)
+        build --build-arg "REBUILD=$(date +%s)"
+        exit 0 ;;
+    reset)
+        printf 'delete the container and home for %s? [y/N] ' "$DIR"
+        read -r answer                                   # answer: y deletes, anything else keeps
+        case "$answer" in
+            y|Y) podman rm -f "$NAME" >/dev/null 2>&1 || true
+                 rm -rf "${DATA:?}/$HASH" ;;
+        esac
+        exit 0 ;;
+esac
+
+podman image exists "$IMAGE" || build
+mkdir -p "$SHARED" "$BOX"
+# The host wins for settings; login and sessions live in the container.
+copy "$HOME/.claude/settings.json" "$SHARED"
+copy "$HOME/.claude/CLAUDE.md" "$SHARED"
+copy "$HOME/.claude/commands" "$SHARED"
+copy "$HOME/.claude/agents" "$SHARED"
+copy "$HOME/.zshrc" "$BOX"
+
+# A second terminal would share the first one's tty, so one at a time.
+if [ -n "$(podman ps -q --filter "name=^$NAME$")" ]; then
+    die "already running in this folder"
+fi
+
+# Restarting reruns the image entrypoint, which puts the egress rules back up
+# in the fresh network namespace.
+if [ "$#" -eq 0 ] && podman container exists "$NAME"; then
+    exec podman start --attach --interactive "$NAME"
+fi
+
+# A container keeps the command it was made with, so arguments need a new one.
+podman rm -f "$NAME" >/dev/null 2>&1 || true
+[ "$#" -gt 0 ] || set -- --continue                      # nothing given: resume the last session
+exec podman run -it --name "$NAME" \
+    --userns "keep-id:uid=1000,gid=1000" \
+    --cap-add NET_ADMIN \
+    --dns 9.9.9.9 --dns 1.1.1.1 \
+    --sysctl net.ipv6.conf.all.disable_ipv6=1 \
+    -e "TERM=${TERM:-xterm-256color}" \
+    -v "$DIR:$DIR" -v "$BOX:/home/claude" -v "$SHARED:/home/claude/.claude" \
+    -w "$DIR" "$IMAGE" claude "$@"
