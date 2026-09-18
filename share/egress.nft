@@ -1,13 +1,7 @@
-#!/usr/sbin/nft -f
-#
-# airlock egress policy, applied inside the container's network namespace by a
-# short-lived helper container. The airlock container itself has no NET_ADMIN,
-# so nothing running in it (not even via sudo) can change these rules.
-#
-# Policy: the whole internet is allowed, every private/local network is not.
-# We reject rather than drop so tools fail immediately instead of hanging.
+# Internet yes, private networks no. Applied by a helper container that holds
+# NET_ADMIN; the airlock container itself has none and cannot undo this.
+# reject, not drop, so tools fail at once instead of hanging.
 
-# Idempotent replace: create-if-missing, then delete, then define.
 table inet airlock
 delete table inet airlock
 
@@ -15,23 +9,14 @@ table inet airlock {
     chain output {
         type filter hook output priority filter; policy accept;
 
-        # The container's own loopback stays usable (local dev servers).
         oifname "lo" accept
 
         ip daddr {
-            10.0.0.0/8,         # RFC1918
-            172.16.0.0/12,      # RFC1918
-            192.168.0.0/16,     # RFC1918, includes gvproxy 192.168.127.0/24
-            100.64.0.0/10,      # CGNAT, Tailscale
-            169.254.0.0/16,     # link-local
-            127.0.0.0/8,        # loopback range
-            224.0.0.0/4         # multicast
+            10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,  # private, incl. gvproxy
+            100.64.0.0/10,                              # CGNAT, Tailscale
+            169.254.0.0/16, 127.0.0.0/8, 224.0.0.0/4
         } reject with icmpx type admin-prohibited
 
-        ip6 daddr {
-            fc00::/7,           # unique local
-            fe80::/10,          # link-local
-            ::1                 # loopback
-        } reject with icmpx type admin-prohibited
+        ip6 daddr { fc00::/7, fe80::/10, ::1 } reject with icmpx type admin-prohibited
     }
 }

@@ -1,585 +1,118 @@
 #!/usr/bin/env bash
-#
-# airlock - run Claude Code isolated in a Podman container.
-#
-# Scope: macOS + Podman (podman machine). See README.md.
-# Shell: written for the macOS system bash 3.2 (no mapfile, no associative
-# arrays, no ${var,,}). Keep it that way.
-
+# airlock - run Claude Code isolated in a Podman container (macOS).
+# Works with the bash 3.2 that ships with macOS.
 set -euo pipefail
 
-AIRLOCK_VERSION="0.1.0"
 IMAGE="${AIRLOCK_IMAGE:-localhost/airlock:latest}"
-NFT_FAMILY="inet"
-NFT_TABLE="airlock"
-MIN_PODMAN="4.3"
+DATA="${XDG_DATA_HOME:-$HOME/.local/share}/airlock"
+SHARED="$DATA/claude"   # login, settings and sessions, shared by all folders
 
-# ---------------------------------------------------------------- output ----
+die() { printf 'airlock: %s\n' "$*" >&2; exit 1; }
 
-msg()  { printf 'airlock: %s\n' "$*" >&2; }
-warn() { printf 'airlock: warning: %s\n' "$*" >&2; }
-die()  { printf 'airlock: error: %s\n' "$*" >&2; exit 1; }
+# Copy host -> container, for files and directories alike.
+copy() { [ -e "$1" ] || return 0; rm -rf "${2:?}/$(basename "$1")"; cp -R "$1" "$2"; }
 
-# ------------------------------------------------------------- locations ----
+# --- where am I ------------------------------------------------------------
 
-DATA_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/airlock"
+DIR=$(pwd -P)
+case "$DIR" in
+    "/" | "$(cd -P "$HOME" && pwd -P)") die "not here - cd into a project directory" ;;
+esac
 
-# Directory of this script, with symlinks resolved (macOS readlink has no -f,
-# and the `claude` convenience symlink points here).
-self_dir() {
-    local src dir
-    src="$0"
-    while [ -L "$src" ]; do
-        dir=$(cd -P "$(dirname "$src")" && pwd)
-        src=$(readlink "$src")
-        case "$src" in
-            /*) ;;
-            *) src="$dir/$src" ;;
-        esac
+HASH=$(printf '%s' "$DIR" | shasum -a 256 | cut -c1-12)
+NAME="airlock-$(basename "$DIR" | tr -cd 'a-zA-Z0-9_.-' | cut -c1-30)-$HASH"
+BOX="$DATA/$HASH/home"  # this folder's container home
+
+SHARE="${AIRLOCK_SHARE:-}"
+if [ -z "$SHARE" ]; then
+    for d in "$(dirname "$0")/../share" "$DATA/dist"; do
+        if [ -f "$d/Containerfile" ]; then SHARE=$(cd -P "$d" && pwd); break; fi
     done
-    cd -P "$(dirname "$src")" && pwd
+fi
+[ -n "$SHARE" ] || die "share files not found - set AIRLOCK_SHARE"
+
+# --- container -------------------------------------------------------------
+
+build() {
+    podman build -t "$IMAGE" -f "$SHARE/Containerfile" "$SHARE"
 }
 
-# Where Containerfile, bashrc and egress.nft live.
-find_share() {
-    local here candidate
-    if [ -n "${AIRLOCK_SHARE:-}" ]; then
-        [ -f "$AIRLOCK_SHARE/Containerfile" ] ||
-            die "AIRLOCK_SHARE=$AIRLOCK_SHARE does not contain a Containerfile"
-        printf '%s\n' "$AIRLOCK_SHARE"
-        return 0
+start() {
+    podman start "$NAME" >/dev/null
+    # A new start means a new network namespace, so the rules go on again.
+    # The helper is the only thing that ever gets NET_ADMIN.
+    podman run --rm -i --network "container:$NAME" --userns "container:$NAME" \
+        --user 0:0 --cap-add NET_ADMIN --entrypoint sh "$IMAGE" \
+        -c 'nft -f - && nft list table inet airlock >/dev/null' \
+        < "$SHARE/egress.nft" \
+        || { podman stop -t 2 "$NAME" >/dev/null 2>&1; die "egress rules failed - container stopped"; }
+}
+
+ready() {
+    podman image exists "$IMAGE" || build
+
+    mkdir -p "$SHARED" "$BOX"
+    # The host wins for settings; login and sessions live in the container.
+    copy "$HOME/.claude/settings.json" "$SHARED"
+    copy "$HOME/.claude/CLAUDE.md" "$SHARED"
+    copy "$HOME/.claude/commands" "$SHARED"
+    copy "$HOME/.claude/agents" "$SHARED"
+    copy "$HOME/.zshrc" "$BOX"
+
+    if ! podman container exists "$NAME"; then
+        podman create --name "$NAME" --init \
+            --userns "keep-id:uid=1000,gid=1000" \
+            --cap-drop NET_ADMIN,NET_RAW \
+            --dns 9.9.9.9 --dns 1.1.1.1 \
+            --sysctl net.ipv6.conf.all.disable_ipv6=1 \
+            -v "$DIR:$DIR" -v "$BOX:/home/claude" -v "$SHARED:/home/claude/.claude" \
+            -w "$DIR" "$IMAGE" sleep infinity >/dev/null
     fi
-    here=$(self_dir)
-    for candidate in "$here/../share" "$DATA_ROOT/dist"; do
-        if [ -f "$candidate/Containerfile" ]; then
-            (cd -P "$candidate" && pwd)
-            return 0
-        fi
-    done
-    die "cannot find airlock share files (Containerfile). Set AIRLOCK_SHARE."
+    [ "$(podman inspect -f '{{.State.Running}}' "$NAME")" = "true" ] || start
 }
 
-SHARE=""
-share_dir() {
-    [ -n "$SHARE" ] || SHARE=$(find_share)
-    printf '%s\n' "$SHARE"
+box() {
+    local tty=-i
+    [ -t 0 ] && tty=-it
+    exec podman exec "$tty" -e "TERM=${TERM:-xterm-256color}" -w "$DIR" "$NAME" "$@"
 }
 
-# ---------------------------------------------------------------- helpers ----
-
-# macOS ships shasum, not sha256sum.
-sha256_of() {
-    if command -v shasum >/dev/null 2>&1; then
-        printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
-    elif command -v sha256sum >/dev/null 2>&1; then
-        printf '%s' "$1" | sha256sum | cut -d' ' -f1
-    else
-        die "neither shasum nor sha256sum found"
-    fi
-}
-
-sha256_of_files() {
-    local out
-    if command -v shasum >/dev/null 2>&1; then
-        out=$(cat "$@" | shasum -a 256)
-    else
-        out=$(cat "$@" | sha256sum)
-    fi
-    printf '%s' "$out" | cut -d' ' -f1 | cut -c1-12
-}
-
-# Returns 0 if $1 >= $2 (dotted numeric compare, missing parts count as 0).
-version_ge() {
-    local a b
-    a=$(printf '%s' "$1" | awk -F. '{printf "%d%03d%03d", $1, $2, $3}')
-    b=$(printf '%s' "$2" | awk -F. '{printf "%d%03d%03d", $1, $2, $3}')
-    [ "$a" -ge "$b" ]
-}
-
-confirm() {
-    local reply
-    printf '%s [y/N] ' "$1" >&2
-    read -r reply || reply=""
-    case "$reply" in
-        y|Y|yes|YES) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-# --------------------------------------------------------------- podman -----
-
-require_podman() {
-    command -v podman >/dev/null 2>&1 ||
-        die "podman not found. Install it with: brew install podman"
-
-    local v
-    v=$(podman version --format '{{.Client.Version}}' 2>/dev/null || printf '')
-    if [ -n "$v" ] && ! version_ge "$v" "$MIN_PODMAN"; then
-        die "podman $v is too old; airlock needs >= $MIN_PODMAN (--userns=keep-id:uid=...)"
-    fi
-}
-
-require_machine() {
-    [ "$(uname -s)" = "Darwin" ] || return 0
-
-    local state
-    state=$(podman machine info --format '{{.Host.MachineState}}' 2>/dev/null || printf '')
-    case "$state" in
-        Running) return 0 ;;
-        "")
-            podman info >/dev/null 2>&1 ||
-                die "podman is not reachable. Start the VM with: podman machine start"
-            ;;
-        *)
-            die "podman machine is '$state'. Start it with: podman machine start"
-            ;;
-    esac
-}
-
-# --------------------------------------------------------------- project ----
-
-PROJECT_DIR=""
-HASH=""
-SLUG=""
-CONTAINER=""
-STATE_DIR=""
-
-init_project() {
-    local home_real root_real
-
-    PROJECT_DIR=$(pwd -P)
-    home_real=$(cd -P "$HOME" && pwd -P)
-    root_real="/"
-
-    if [ "$PROJECT_DIR" = "$root_real" ]; then
-        die "refusing to run in / - cd into a project directory first"
-    fi
-    if [ "$PROJECT_DIR" = "$home_real" ]; then
-        die "refusing to run in your home directory - cd into a project directory first"
-    fi
-
-    case "$PROJECT_DIR" in
-        "$home_real"/*) ;;
-        *)
-            warn "$PROJECT_DIR is outside \$HOME; podman machine may not share it."
-            warn "If the mount fails, recreate the VM with: podman machine init -v $PROJECT_DIR:$PROJECT_DIR"
-            ;;
-    esac
-
-    HASH=$(sha256_of "$PROJECT_DIR" | cut -c1-12)
-    SLUG=$(basename "$PROJECT_DIR" | tr -cd 'a-zA-Z0-9_.-' | cut -c1-30)
-    [ -n "$SLUG" ] || SLUG="dir"
-    CONTAINER="airlock-$SLUG-$HASH"
-    STATE_DIR="$DATA_ROOT/$HASH"
-}
-
-ensure_state() {
-    mkdir -p "$STATE_DIR/home"
-    printf '%s\n' "$PROJECT_DIR" > "$STATE_DIR/path"
-}
-
-# ----------------------------------------------------------------- image ----
-
-image_exists() {
-    podman image exists "$IMAGE"
-}
-
-build_hash() {
-    local share
-    share=$(share_dir)
-    sha256_of_files "$share/Containerfile" "$share/bashrc"
-}
-
-build_image() {
-    local share bh
-    share=$(share_dir)
-    bh=$(build_hash)
-    msg "building $IMAGE (this takes a few minutes the first time) ..."
-    podman build \
-        --build-arg "AIRLOCK_BUILD=$bh" \
-        -t "$IMAGE" \
-        -f "$share/Containerfile" \
-        "$share"
-}
-
-ensure_image() {
-    if ! image_exists; then
-        build_image
-        return 0
-    fi
-    local have want
-    have=$(podman image inspect "$IMAGE" --format '{{index .Labels "airlock.build"}}' 2>/dev/null || printf '')
-    want=$(build_hash)
-    if [ -n "$want" ] && [ "$have" != "$want" ]; then
-        warn "image $IMAGE was built from older share files; run 'airlock :rebuild' to update"
-    fi
-}
-
-# --------------------------------------------------------------- network ----
-
-# Run nft in the container's network (and user) namespace via a short-lived
-# helper. Only this helper gets NET_ADMIN - the airlock container never does.
-# $1 is fed to nft on stdin (may be empty), the rest are nft's arguments.
-nft_run() {
-    local input="$1"
-    shift
-    local rc=0
-
-    printf '%s\n' "$input" | podman run --rm -i \
-        --network "container:$CONTAINER" \
-        --userns "container:$CONTAINER" \
-        --user 0:0 \
-        --cap-add NET_ADMIN \
-        --entrypoint nft \
-        "$IMAGE" "$@" >/dev/null 2>&1 || rc=$?
-
-    if [ "$rc" -ne 0 ]; then
-        # Some podman versions refuse --userns=container:. Retry without it,
-        # feeding stdin again since the first attempt consumed it.
-        rc=0
-        printf '%s\n' "$input" | podman run --rm -i \
-            --network "container:$CONTAINER" \
-            --user 0:0 \
-            --cap-add NET_ADMIN \
-            --entrypoint nft \
-            "$IMAGE" "$@" >/dev/null 2>&1 || rc=$?
-    fi
-
-    return "$rc"
-}
-
-apply_rules() {
-    local share rules
-    share=$(share_dir)
-    [ -f "$share/egress.nft" ] || die "missing ruleset: $share/egress.nft"
-    rules=$(cat "$share/egress.nft")
-    nft_run "$rules" -f -
-}
-
-verify_rules() {
-    nft_run "" list table "$NFT_FAMILY" "$NFT_TABLE"
-}
-
-# Fail closed: no exec without an active ruleset.
-require_rules() {
-    if verify_rules; then
-        return 0
-    fi
-    podman stop -t 2 "$CONTAINER" >/dev/null 2>&1 || true
-    die "egress rules are missing in $CONTAINER - container stopped (fail-closed). Run airlock again to restart it with rules."
-}
-
-# ------------------------------------------------------------- container ----
-
-container_exists() {
-    podman container exists "$CONTAINER"
-}
-
-container_running() {
-    [ "$(podman inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || printf 'false')" = "true" ]
-}
-
-create_container() {
-    msg "creating container $CONTAINER for $PROJECT_DIR"
-    podman create \
-        --name "$CONTAINER" \
-        --hostname airlock \
-        --init \
-        --userns "keep-id:uid=1000,gid=1000" \
-        --cap-drop NET_ADMIN,NET_RAW \
-        --dns 9.9.9.9 \
-        --dns 1.1.1.1 \
-        --sysctl net.ipv6.conf.all.disable_ipv6=1 \
-        --label "airlock.path=$PROJECT_DIR" \
-        --label "airlock.hash=$HASH" \
-        -v "$PROJECT_DIR:$PROJECT_DIR" \
-        -v "$STATE_DIR/home:/home/claude" \
-        -w "$PROJECT_DIR" \
-        "$IMAGE" sleep infinity >/dev/null
-}
-
-start_container() {
-    podman start "$CONTAINER" >/dev/null
-    # New start means a new network namespace: rules have to be reapplied.
-    if ! apply_rules; then
-        podman stop -t 2 "$CONTAINER" >/dev/null 2>&1 || true
-        die "could not apply egress rules - container stopped (fail-closed)"
-    fi
-}
-
-ensure_container() {
-    ensure_state
-    ensure_image
-    container_exists || create_container
-    container_running || start_container
-    require_rules
-}
-
-# ------------------------------------------------------------------ exec ----
-
-# Environment handed to the container at exec time only - never baked into the
-# image, never stored in labels.
-EXEC_ENV=()
-
-build_exec_env() {
-    local token_file token
-    EXEC_ENV=()
-
-    EXEC_ENV+=(-e "TERM=${TERM:-xterm-256color}")
-    [ -n "${COLORTERM:-}" ] && EXEC_ENV+=(-e "COLORTERM=$COLORTERM")
-
-    if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-        EXEC_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN")
-    else
-        token_file="$DATA_ROOT/oauth-token"
-        if [ -f "$token_file" ]; then
-            token=$(tr -d '\r\n' < "$token_file")
-            [ -n "$token" ] && EXEC_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=$token")
-        fi
-    fi
-
-    [ -n "${ANTHROPIC_API_KEY:-}" ] && EXEC_ENV+=(-e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
-    return 0
-}
-
-tty_flags() {
-    if [ -t 0 ] && [ -t 1 ]; then
-        printf '%s\n' "-it"
-    else
-        printf '%s\n' "-i"
-    fi
-}
-
-run_in_container() {
-    local tty
-    tty=$(tty_flags)
-    build_exec_env
-    exec podman exec "$tty" \
-        "${EXEC_ENV[@]+"${EXEC_ENV[@]}"}" \
-        -w "$PROJECT_DIR" \
-        "$CONTAINER" "$@"
-}
-
-# A session exists once Claude Code has written a transcript into the home.
-has_session() {
+# Claude names its session directory after the path, non-letters turned into dashes.
+resume() {
     local f
-    for f in "$STATE_DIR"/home/.claude/projects/*/*.jsonl; do
+    for f in "$SHARED/projects/$(printf '%s' "$DIR" | tr -c 'a-zA-Z0-9' '-')"/*.jsonl; do
         [ -e "$f" ] && return 0
     done
     return 1
 }
 
-# -------------------------------------------------------------- commands ----
+# --- commands --------------------------------------------------------------
 
-cmd_claude() {
-    local args
-    args=()
-    ensure_container
-
-    if [ "${AIRLOCK_YOLO:-0}" = "1" ]; then
-        args+=(--dangerously-skip-permissions)
-    fi
-
-    if [ "$#" -eq 0 ]; then
-        if has_session; then
-            args+=(--continue)
-        fi
-    else
-        args+=("$@")
-    fi
-
-    run_in_container claude "${args[@]+"${args[@]}"}"
-}
-
-cmd_shell() {
-    ensure_container
-    run_in_container bash
-}
-
-cmd_update() {
-    ensure_container
-    build_exec_env
-    msg "updating Claude Code in $CONTAINER (into /home/claude/.npm-global)"
-    podman exec "$(tty_flags)" \
-        "${EXEC_ENV[@]+"${EXEC_ENV[@]}"}" \
-        -w "$PROJECT_DIR" \
-        "$CONTAINER" npm install -g @anthropic-ai/claude-code@latest
-}
-
-cmd_stop() {
-    if container_exists && container_running; then
-        podman stop -t 5 "$CONTAINER" >/dev/null
-        msg "stopped $CONTAINER"
-    else
-        msg "no running container for $PROJECT_DIR"
-    fi
-}
-
-cmd_recreate() {
-    if container_exists; then
-        podman rm -f "$CONTAINER" >/dev/null
-        msg "removed $CONTAINER (home, session and history are kept in $STATE_DIR)"
-    else
-        msg "no container for $PROJECT_DIR"
-    fi
-    msg "it will be recreated on the next 'airlock' in this directory"
-}
-
-cmd_reset() {
-    printf 'This deletes the container AND all persistent state for:\n  %s\n  %s\n' \
-        "$PROJECT_DIR" "$STATE_DIR" >&2
-    if ! confirm "Delete container and state?"; then
-        msg "aborted"
-        return 0
-    fi
-    container_exists && podman rm -f "$CONTAINER" >/dev/null
-    if [ -d "$STATE_DIR" ]; then
-        rm -rf "$STATE_DIR"
-        msg "removed $STATE_DIR"
-    fi
-    msg "reset done"
-}
-
-cmd_rebuild() {
-    build_image
-    msg "image rebuilt. Existing containers keep the old image until you run 'airlock :recreate' in their directory."
-}
-
-cmd_ls() {
-    local name status hash path
-    printf '%-40s %-22s %s\n' "CONTAINER" "STATUS" "PATH"
-    podman ps -a --filter "name=^airlock-" --format '{{.Names}}|{{.Status}}' |
-    while IFS='|' read -r name status; do
-        [ -n "$name" ] || continue
-        hash="${name##*-}"
-        path=""
-        [ -f "$DATA_ROOT/$hash/path" ] && path=$(cat "$DATA_ROOT/$hash/path")
-        [ -n "$path" ] || path="(unknown)"
-        printf '%-40s %-22s %s\n' "$name" "$status" "$path"
-    done
-}
-
-cmd_doctor() {
-    local ok=0 share state
-
-    printf 'airlock %s\n' "$AIRLOCK_VERSION"
-    printf 'project:   %s\n' "$PROJECT_DIR"
-    printf 'hash:      %s\n' "$HASH"
-    printf 'container: %s\n' "$CONTAINER"
-    printf 'state:     %s\n' "$STATE_DIR"
-    share=$(share_dir)
-    printf 'share:     %s\n' "$share"
-
-    printf 'podman:    %s\n' "$(podman version --format '{{.Client.Version}}' 2>/dev/null || echo '?')"
-    if [ "$(uname -s)" = "Darwin" ]; then
-        state=$(podman machine info --format '{{.Host.MachineState}}' 2>/dev/null || printf '?')
-        printf 'machine:   %s\n' "$state"
-    fi
-
-    if image_exists; then
-        printf 'image:     present (%s)\n' "$IMAGE"
-    else
-        printf 'image:     MISSING (%s) - will be built on first run\n' "$IMAGE"
-        ok=1
-    fi
-
-    if container_exists; then
-        if container_running; then
-            printf 'container: running\n'
-            if verify_rules; then
-                printf 'rules:     active\n'
-            else
-                printf 'rules:     MISSING - exec is blocked (fail-closed)\n'
-                ok=1
-            fi
-        else
-            printf 'container: created, not running\n'
-        fi
-    else
-        printf 'container: not created yet\n'
-    fi
-
-    if container_exists && container_running && verify_rules; then
-        printf '\nnetwork checks:\n'
-        doctor_net "https://api.anthropic.com" reachable
-        doctor_net "http://host.containers.internal" blocked
-        doctor_net "http://192.168.127.254" blocked
-        doctor_net "http://10.0.0.1" blocked
-    fi
-
-    return "$ok"
-}
-
-doctor_net() {
-    local url="$1" want="$2" rc=0
-    podman exec "$CONTAINER" curl -sS -o /dev/null -m 4 "$url" >/dev/null 2>&1 || rc=$?
-    if [ "$want" = "reachable" ]; then
-        if [ "$rc" -eq 0 ]; then printf '  ok       %s reachable\n' "$url"
-        else printf '  FAIL     %s unreachable (rc=%s)\n' "$url" "$rc"; fi
-    else
-        if [ "$rc" -ne 0 ]; then printf '  ok       %s blocked\n' "$url"
-        else printf '  FAIL     %s REACHABLE but should be blocked\n' "$url"; fi
-    fi
-}
-
-cmd_help() {
-    cat <<'USAGE'
-airlock - run Claude Code isolated in a Podman container
-
-Usage:
-  airlock [claude args...]   start Claude Code in this directory
-                             (no args: --continue when a session exists)
-  airlock :shell             open a bash shell in the same container
-  airlock :update            update Claude Code inside the container home
-  airlock :stop              stop this directory's container
-  airlock :recreate          delete the container, keep home/session/history
-  airlock :reset             delete container AND state for this directory
-  airlock :rebuild           rebuild the image
-  airlock :ls                list all airlock containers and their paths
-  airlock :doctor            check podman, image, rules and network
-  airlock :help              this text
-
-Environment:
-  AIRLOCK_YOLO=1             pass --dangerously-skip-permissions to claude
-  AIRLOCK_IMAGE              override the image name
-  AIRLOCK_SHARE              override the directory holding Containerfile etc.
-  CLAUDE_CODE_OAUTH_TOKEN    forwarded; otherwise read from
-                             ~/.local/share/airlock/oauth-token if present
-  ANTHROPIC_API_KEY          forwarded when set
+case "${1:-}" in
+    :shell)
+        ready; box zsh ;;
+    :update)
+        ready; podman exec -it "$NAME" npm install -g @anthropic-ai/claude-code@latest ;;
+    :rebuild)
+        build; printf 'airlock: rebuilt - run "airlock :reset" in a folder to use it there\n' ;;
+    :reset)
+        printf 'delete container and home for %s? [y/N] ' "$DIR"
+        read -r a
+        case "$a" in
+            y|Y) podman rm -f "$NAME" >/dev/null 2>&1 || true; rm -rf "${DATA:?}/$HASH" ;;
+        esac ;;
+    :help)
+        cat <<'USAGE'
+claude [args]   start Claude Code here, resuming the last session
+claude :shell   a shell in the same container
+claude :update  update Claude Code in the container
+claude :rebuild rebuild the image
+claude :reset   delete this folder's container and home
 USAGE
-}
-
-# ------------------------------------------------------------------ main ----
-
-main() {
-    # Commands that do not touch a project directory.
-    case "${1:-}" in
-        :help)
-            cmd_help
-            return 0
-            ;;
-        :ls)
-            require_podman
-            cmd_ls
-            return 0
-            ;;
-    esac
-
-    require_podman
-    require_machine
-    init_project
-
-    case "${1:-}" in
-        :shell)    shift; cmd_shell "$@" ;;
-        :update)   shift; cmd_update "$@" ;;
-        :stop)     shift; cmd_stop "$@" ;;
-        :recreate) shift; cmd_recreate "$@" ;;
-        :reset)    shift; cmd_reset "$@" ;;
-        :rebuild)  shift; cmd_rebuild "$@" ;;
-        :doctor)   shift; cmd_doctor "$@" ;;
-        :*)        die "unknown airlock command: $1 (try: airlock :help)" ;;
-        *)         cmd_claude "$@" ;;
-    esac
-}
-
-main "$@"
+        ;;
+    :*) die "unknown: $1 (try :help)" ;;
+    *)
+        ready
+        if [ "$#" -eq 0 ] && resume; then set -- --continue; fi
+        box claude "$@" ;;
+esac
