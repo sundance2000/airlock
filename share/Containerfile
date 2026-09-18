@@ -1,26 +1,27 @@
-FROM docker.io/library/node:22-bookworm
+FROM docker.io/library/python:3.13-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates curl fd-find git jq less nano nftables \
-      openssh-client procps python3 python3-pip python3-venv ripgrep sudo zsh \
+      openssh-client procps ripgrep sudo zsh \
  && rm -rf /var/lib/apt/lists/* \
  && ln -sf "$(command -v fdfind)" /usr/local/bin/fd
 
-# The node image already owns uid 1000; swap it for a user of our own.
-RUN userdel -r node \
- && useradd --create-home --uid 1000 --shell /bin/zsh claude \
+RUN useradd --create-home --uid 1000 --shell /bin/zsh claude \
  && printf 'claude ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/claude \
  && chmod 0440 /etc/sudoers.d/claude
 
-# Updates go into the home via `airlock :update`, so the bundled updater stays off.
-RUN npm install -g @anthropic-ai/claude-code && npm cache clean --force
+# Native install, no node and no npm. It lands outside /home/claude because
+# that is a mount at runtime; `airlock :update` reruns this installer.
+RUN mkdir -p /opt/claude \
+ && curl -fsSL https://claude.ai/install.sh | HOME=/opt/claude bash \
+ && ln -sf /opt/claude/.local/bin/claude /usr/local/bin/claude
 
 ENV HOME=/home/claude \
     SHELL=/bin/zsh \
     LANG=C.UTF-8 \
-    NPM_CONFIG_PREFIX=/home/claude/.npm-global \
     DISABLE_AUTOUPDATER=1 \
-    PATH=/home/claude/.npm-global/bin:/home/claude/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PATH=/home/claude/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # /home/claude is a mount at runtime, so this has to live outside it.
 # The user's own ~/.zshrc is read afterwards and wins.

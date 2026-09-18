@@ -1,7 +1,8 @@
 # airlock
 
 Run **Claude Code** in a Podman container: it sees only the current directory
-and the internet — not your Mac, not your LAN.
+and the internet — not your Mac, not your LAN. The image is a Python one
+(`python:3.13-bookworm`) with Claude Code installed natively — no Node, no npm.
 
 ```sh
 cd ~/code/my-project
@@ -56,9 +57,9 @@ oh-my-zsh will not resolve inside the container; the container's own history
 and prompt settings are applied before your file is read, so they survive.
 
 `~/.local/share/airlock/<hash>/home/` is the rest of the home, one per folder:
-shell history and anything installed with `npm i -g` or `pip install --user`.
-Packages from `sudo apt install` live in the container and survive stop/start,
-but not `:reset`.
+shell history and anything installed with `pip install --user`. Packages from
+`sudo apt install` live in the container and survive stop/start, but not
+`:reset`.
 
 ## Security model
 

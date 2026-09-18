@@ -92,7 +92,9 @@ case "${1:-}" in
     :shell)
         ready; box zsh ;;
     :update)
-        ready; podman exec -it "$NAME" npm install -g @anthropic-ai/claude-code@latest ;;
+        ready
+        podman exec -it "$NAME" sudo sh -c \
+            'curl -fsSL https://claude.ai/install.sh | HOME=/opt/claude bash' ;;
     :rebuild)
         build; printf 'airlock: rebuilt - run "airlock :reset" in a folder to use it there\n' ;;
     :reset)
