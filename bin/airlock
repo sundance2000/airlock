@@ -23,6 +23,11 @@ esac
 case "${1:-}" in
     update)
         build_image --build-arg "rebuild=$(date +%s)"
+        # Containers keep the image they were built from, so a rebuilt image
+        # only takes effect once they are gone. Running ones are left alone.
+        for stale in $(podman ps -aq --filter "name=^airlock-" --filter status=created --filter status=exited); do
+            podman rm -f "$stale" >/dev/null
+        done
         exit 0 ;;
     reset)
         podman rm -f "$container_name" >/dev/null 2>&1 || true

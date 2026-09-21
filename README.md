@@ -33,7 +33,7 @@ the installer warns you if it does not. `./install.sh --no-link` skips the link.
 | | |
 |---|---|
 | `claude` | start here and resume the last session |
-| `claude update` | rebuild the image with the current Claude Code |
+| `claude update` | rebuild the image and drop the containers still on the old one |
 | `claude reset` | delete this folder's container and home |
 
 `update` and `reset` are the only words airlock takes; `update` therefore
@@ -79,7 +79,10 @@ Two directories hold the rest:
 
 `bin/airlock` reads the image definition from that one absolute path, so
 `./install.sh` has to run once before the first `claude`, and again after you
-change anything under `image/` in this repo.
+change anything under `image/` in this repo — `claude update` builds from the
+installed copy, not from your checkout. It also removes the containers that
+are still on the old image, since a container keeps the image it was built
+from.
 
 ## Security model
 
