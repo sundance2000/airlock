@@ -1,5 +1,0 @@
-HISTFILE=~/.zsh_history
-HISTSIZE=100000
-SAVEHIST=100000
-setopt append_history inc_append_history share_history
-PROMPT='[airlock] %~ %# '

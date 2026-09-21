@@ -56,28 +56,35 @@ place. `claude reset` gets you back to a plain one. Only one terminal at a
 time per folder — a second is refused rather than attached to the first one's
 tty.
 
-Two directories on your Mac hold what must outlive the containers:
+Three directories on your Mac hold what the containers cannot:
 
 ```
 ~/.local/share/airlock/
-├── claude/          -> ~/.claude in every container: login, settings, sessions
-└── <hash>/home/     -> ~ in this folder's container: shell history, pip --user
+├── image/           the Containerfile the image is built from
+├── config/          -> ~/.claude in every container: login, settings, sessions
+└── <hash>/          -> ~ in this folder's container: shell history, pip --user
 ```
 
-Because `~/.claude` is shared, you log in **once** and every folder is logged
-in. Sessions still belong to the folder they were started in — Claude Code keys
-them by path — which is why a bare `claude` continues where you left off.
+Because `config/` is the same for every folder, you log in **once** and every
+folder is logged in. Sessions still belong to the folder they were started in —
+Claude Code keys them by path — which is why a bare `claude` resumes where you
+left off.
 
-On every start these are copied from your Mac into the container, with the Mac
-as the source of truth:
+Your Mac's settings are copied into `config/` on every start, the Mac being the
+source of truth:
 
 * `~/.claude/settings.json`, `~/.claude/CLAUDE.md`, `~/.claude/commands/`, `~/.claude/agents/`
-* `~/.zshrc`
+* `~/.zshrc`, into the folder's home
 
-Edit them on the Mac, not in the container — a copy inside is overwritten on
-the next start. Anything in your `~/.zshrc` that points at Homebrew or
-oh-my-zsh will not resolve inside the container; the container's own history
-and prompt settings are applied before your file is read, so they survive.
+Copied, not mounted — deliberately. A container that could write your real
+`~/.claude` could leave a hook there, and your Mac would run it the next time
+you start Claude Code outside the container. So edit these on the Mac; a copy
+changed inside the container is overwritten on the next start.
+
+Anything in your `~/.zshrc` that points at Homebrew or oh-my-zsh will not
+resolve inside the container. The container's own history and prompt settings
+sit in `/etc/zsh/zshrc`, which zsh reads before `~/.zshrc`, so yours wins where
+they overlap and the history still lands in the persistent home.
 
 ## Security model
 

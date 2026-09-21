@@ -10,8 +10,19 @@ RUN useradd --create-home --uid 1000 --shell /bin/zsh claude \
  && printf 'claude ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/claude \
  && chmod 0440 /etc/sudoers.d/claude
 
+# History and prompt for the container. /home/claude is a mount at runtime, so
+# this belongs in the system-wide file; the user's own ~/.zshrc is read after
+# it and wins.
+RUN printf '%s\n' \
+      'HISTFILE=~/.zsh_history' \
+      'HISTSIZE=100000' \
+      'SAVEHIST=100000' \
+      'setopt append_history inc_append_history' \
+      "PROMPT='[airlock] %~ %# '" \
+      > /etc/zsh/zshrc
+
 # `airlock update` passes a new value here to reinstall Claude Code.
-ARG REBUILD=0
+ARG rebuild=0
 # Native install, no node and no npm. It lands outside /home/claude because
 # that path is a mount at runtime.
 RUN mkdir -p /opt/claude \
@@ -25,9 +36,6 @@ ENV HOME=/home/claude \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PATH=/home/claude/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# /home/claude is a mount at runtime, so this has to live outside it.
-# The user's own ~/.zshrc is read afterwards and wins.
-COPY zshrc /etc/zsh/zshrc
 COPY egress.nft /etc/airlock/egress.nft
 COPY entrypoint /usr/local/bin/airlock-entrypoint
 RUN chmod 0755 /usr/local/bin/airlock-entrypoint
