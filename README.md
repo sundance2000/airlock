@@ -102,7 +102,7 @@ root with `CAP_NET_ADMIN`, in a fresh network namespace:
 
 ```sh
 nft -f /etc/airlock/egress.nft
-exec setpriv --reuid=1000 --regid=1000 --init-groups \
+exec setpriv --reuid=1000 --regid=1000 --keep-groups \
     --bounding-set=-net_admin,-net_raw -- "$@"
 ```
 
