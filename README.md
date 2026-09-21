@@ -65,9 +65,13 @@ zsh reads first, so yours still wins where they overlap.
 
 Because `~/.claude` is the same for every folder, you log in **once**. Sessions
 belong to the folder they were started in — Claude Code keys them by path, and
-the folder is mounted at its real path — which is why a bare `claude` resumes
-where you left off, and why the sessions are also there if you run Claude Code
-on the Mac directly.
+the folder is mounted at its real path — so the sessions are also there if you
+run Claude Code on the Mac directly.
+
+Resuming is decided inside the container, on every start: if this folder has a
+session, the entrypoint adds `--continue`, and if it does not, it leaves it off
+because `claude --continue` refuses to start without one. Pass any argument of
+your own and it starts a normal session instead.
 
 Two directories hold the rest:
 

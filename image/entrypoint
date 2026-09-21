@@ -2,10 +2,21 @@
 # Put the egress rules up while we still have NET_ADMIN, then drop that
 # capability for good - not even sudo can get it back - and become the user.
 # If the rules fail to apply, the container exits before Claude ever starts.
-#
-# --keep-groups, not --init-groups: setgroups() is denied inside a rootless
-# user namespace, and every other group option calls it.
 set -e
 nft -f /etc/airlock/egress.nft
+
+# Resume this folder's last session, but only when there is one: `claude
+# --continue` refuses to start otherwise. Claude names its session folder
+# after the working directory, every non-alphanumeric character a dash.
+# This runs on every container start, not just the first one.
+if [ "$#" -eq 1 ] && [ "$1" = claude ]; then
+    sessions="/home/claude/.claude/projects/$(pwd | tr -c 'a-zA-Z0-9' '-')"
+    if ls "$sessions"/*.jsonl >/dev/null 2>&1; then
+        set -- claude --continue
+    fi
+fi
+
+# --keep-groups, not --init-groups: setgroups() is denied inside a rootless
+# user namespace, and every other group option calls it.
 exec setpriv --reuid=1000 --regid=1000 --keep-groups \
     --bounding-set=-net_admin,-net_raw -- "$@"

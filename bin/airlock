@@ -50,14 +50,13 @@ if [ -n "$(podman ps -q --filter "name=^$container_name$")" ]; then
 fi
 
 if podman container exists "$container_name"; then
-    # Restarting reruns `claude --continue`, so the session carries on and
-    # everything apt installed in there is still present.
+    # Restarting runs the entrypoint again, which resumes this folder's
+    # session; everything apt installed in the container is still present.
     [ "$#" -eq 0 ] && exec podman start --attach --interactive "$container_name"
     # Arguments cannot reach a container that already exists, so replace it.
     podman rm -f "$container_name" >/dev/null
 fi
 
-[ "$#" -gt 0 ] || set -- --continue        # no arguments: resume the last session here
 exec podman run -it --name "$container_name" \
     --userns "keep-id:uid=1000,gid=1000" \
     --cap-add NET_ADMIN \
