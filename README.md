@@ -56,35 +56,26 @@ place. `claude reset` gets you back to a plain one. Only one terminal at a
 time per folder — a second is refused rather than attached to the first one's
 tty.
 
-Three directories on your Mac hold what the containers cannot:
+Your real `~/.claude` and `~/.zshrc` are mounted into the container, so login,
+settings, memory and sessions are the same inside and out — no copies, no
+syncing. `~/.zshrc` goes in read-only; nothing in the container needs to write
+it. What is in it that points at Homebrew or oh-my-zsh will not resolve there;
+the container's own history and prompt settings sit in `/etc/zsh/zshrc`, which
+zsh reads first, so yours still wins where they overlap.
+
+Because `~/.claude` is the same for every folder, you log in **once**. Sessions
+belong to the folder they were started in — Claude Code keys them by path, and
+the folder is mounted at its real path — which is why a bare `claude` resumes
+where you left off, and why the sessions are also there if you run Claude Code
+on the Mac directly.
+
+Two directories hold the rest:
 
 ```
 ~/.local/share/airlock/
-├── image/           the Containerfile the image is built from
-├── config/          -> ~/.claude in every container: login, settings, sessions
-└── <hash>/          -> ~ in this folder's container: shell history, pip --user
+├── image/     the Containerfile the image is built from
+└── <hash>/    -> ~ in this folder's container: shell history, pip --user
 ```
-
-Because `config/` is the same for every folder, you log in **once** and every
-folder is logged in. Sessions still belong to the folder they were started in —
-Claude Code keys them by path — which is why a bare `claude` resumes where you
-left off.
-
-Your Mac's settings are copied into `config/` on every start, the Mac being the
-source of truth:
-
-* `~/.claude/settings.json`, `~/.claude/CLAUDE.md`, `~/.claude/commands/`, `~/.claude/agents/`
-* `~/.zshrc`, into the folder's home
-
-Copied, not mounted — deliberately. A container that could write your real
-`~/.claude` could leave a hook there, and your Mac would run it the next time
-you start Claude Code outside the container. So edit these on the Mac; a copy
-changed inside the container is overwritten on the next start.
-
-Anything in your `~/.zshrc` that points at Homebrew or oh-my-zsh will not
-resolve inside the container. The container's own history and prompt settings
-sit in `/etc/zsh/zshrc`, which zsh reads before `~/.zshrc`, so yours wins where
-they overlap and the history still lands in the persistent home.
 
 ## Security model
 
@@ -94,6 +85,13 @@ NAS or a service on your Mac.
 
 What it does not protect against: a container escape. This is rootless Podman,
 not a hypervisor. Do not run deliberately hostile code in it.
+
+It also does not protect `~/.claude`. That directory is mounted read-write so
+that one login and one set of settings serve every folder, which means the
+container can change it — including writing a hook that your Mac would run the
+next time you start Claude Code outside the container. That is the price of
+sharing it; mount it read-only and Claude Code cannot log in or write a
+session.
 
 Every start — the first one and every restart — runs the image entrypoint as
 root with `CAP_NET_ADMIN`, in a fresh network namespace:

@@ -8,7 +8,6 @@ project=$(pwd -P)                                           # the folder we are 
 key=$(printf '%s' "$project" | shasum -a 256 | cut -c1-12)  # identifies this folder
 container="airlock-$(basename "$project")-$key"
 home="$HOME/.local/share/airlock/$key"                      # mounted as ~ in the container
-config="$HOME/.local/share/airlock/config"                  # mounted as ~/.claude, the same one everywhere
 
 files=$(dirname "$0")/../share                              # Containerfile, entrypoint, egress.nft
 [ -f "$files/Containerfile" ] || files="$HOME/.local/share/airlock/image"
@@ -16,17 +15,6 @@ files=$(dirname "$0")/../share                              # Containerfile, ent
 die() { printf 'airlock: %s\n' "$*" >&2; exit 1; }
 
 build() { podman build "$@" -t "$image" -f "$files/Containerfile" "$files"; }
-
-# Config is copied from the mac, not mounted: a container that could write your
-# real ~/.claude could put a hook there that your mac would then run.
-copy() {
-    local from=$1
-    local to
-    to="$2/$(basename "$from")"
-    [ -e "$from" ] || return 0
-    rm -rf "$to"
-    cp -R "$from" "$2"
-}
 
 case "$project" in
     "/" | "$HOME") die "cd into a project folder first" ;;
@@ -45,11 +33,11 @@ esac
 
 podman image exists "$image" || build
 
-mkdir -p "$config" "$home"
-for setting in settings.json CLAUDE.md commands agents; do
-    copy "$HOME/.claude/$setting" "$config"
-done
-copy "$HOME/.zshrc" "$home"
+mkdir -p "$home" "$HOME/.claude"
+# Your real ~/.claude, so login, settings and sessions are the same inside and
+# out. ~/.zshrc is read-only because nothing in there needs to write it.
+mounts=(-v "$project:$project" -v "$home:/home/claude" -v "$HOME/.claude:/home/claude/.claude")
+[ -f "$HOME/.zshrc" ] && mounts+=(-v "$HOME/.zshrc:/home/claude/.zshrc:ro")
 
 # One terminal at a time: a second would end up sharing the first one's tty.
 if [ -n "$(podman ps -q --filter "name=^$container$")" ]; then
@@ -71,5 +59,4 @@ exec podman run -it --name "$container" \
     --dns 9.9.9.9 --dns 1.1.1.1 \
     --sysctl net.ipv6.conf.all.disable_ipv6=1 \
     -e "TERM=${TERM:-xterm-256color}" \
-    -v "$project:$project" -v "$home:/home/claude" -v "$config:/home/claude/.claude" \
-    -w "$project" "$image" claude "$@"
+    "${mounts[@]}" -w "$project" "$image" claude "$@"
