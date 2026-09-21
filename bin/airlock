@@ -3,60 +3,60 @@
 # internet, and nothing else. macOS + Podman, bash 3.2.
 set -euo pipefail
 
-image=localhost/airlock:latest                              # built from share/
-project=$(pwd -P)                                           # the folder we are in
-key=$(printf '%s' "$project" | shasum -a 256 | cut -c1-12)  # identifies this folder
-container="airlock-$(basename "$project")-$key"
-home="$HOME/.local/share/airlock/$key"                      # mounted as ~ in the container
-
-files=$(dirname "$0")/../share                              # Containerfile, entrypoint, egress.nft
-[ -f "$files/Containerfile" ] || files="$HOME/.local/share/airlock/image"
+image_name=localhost/airlock:latest                                  # the image we build and run
+image_dir="$HOME/.local/share/airlock/image"                         # Containerfile and the two files it copies, put here by install.sh
+project_dir=$(pwd -P)                                                # the folder you are in, the only one the container sees
+project_id=$(printf '%s' "$project_dir" | shasum -a 256 | cut -c1-12)
+container_name="airlock-$(basename "$project_dir")-$project_id"
+container_home="$HOME/.local/share/airlock/$project_id"              # mounted as ~ inside the container
 
 die() { printf 'airlock: %s\n' "$*" >&2; exit 1; }
 
-build() { podman build "$@" -t "$image" -f "$files/Containerfile" "$files"; }
+build_image() { podman build "$@" -t "$image_name" -f "$image_dir/Containerfile" "$image_dir"; }
 
-case "$project" in
+case "$project_dir" in
     "/" | "$HOME") die "cd into a project folder first" ;;
 esac
 
+[ -f "$image_dir/Containerfile" ] || die "$image_dir is missing - run ./install.sh"
+
 case "${1:-}" in
     update)
-        build --build-arg "rebuild=$(date +%s)"
+        build_image --build-arg "rebuild=$(date +%s)"
         exit 0 ;;
     reset)
-        podman rm -f "$container" >/dev/null 2>&1 || true
-        rm -rf "$home"
-        printf 'airlock: removed the container and home for %s\n' "$project"
+        podman rm -f "$container_name" >/dev/null 2>&1 || true
+        rm -rf "$container_home"
+        printf 'airlock: removed the container and home for %s\n' "$project_dir"
         exit 0 ;;
 esac
 
-podman image exists "$image" || build
+podman image exists "$image_name" || build_image
 
-mkdir -p "$home" "$HOME/.claude"
+mkdir -p "$container_home" "$HOME/.claude"
 # Your real ~/.claude, so login, settings and sessions are the same inside and
 # out. ~/.zshrc is read-only because nothing in there needs to write it.
-mounts=(-v "$project:$project" -v "$home:/home/claude" -v "$HOME/.claude:/home/claude/.claude")
+mounts=(-v "$project_dir:$project_dir" -v "$container_home:/home/claude" -v "$HOME/.claude:/home/claude/.claude")
 [ -f "$HOME/.zshrc" ] && mounts+=(-v "$HOME/.zshrc:/home/claude/.zshrc:ro")
 
 # One terminal at a time: a second would end up sharing the first one's tty.
-if [ -n "$(podman ps -q --filter "name=^$container$")" ]; then
+if [ -n "$(podman ps -q --filter "name=^$container_name$")" ]; then
     die "already running in this folder"
 fi
 
-if podman container exists "$container"; then
+if podman container exists "$container_name"; then
     # Restarting reruns `claude --continue`, so the session carries on and
     # everything apt installed in there is still present.
-    [ "$#" -eq 0 ] && exec podman start --attach --interactive "$container"
+    [ "$#" -eq 0 ] && exec podman start --attach --interactive "$container_name"
     # Arguments cannot reach a container that already exists, so replace it.
-    podman rm -f "$container" >/dev/null
+    podman rm -f "$container_name" >/dev/null
 fi
 
 [ "$#" -gt 0 ] || set -- --continue        # no arguments: resume the last session here
-exec podman run -it --name "$container" \
+exec podman run -it --name "$container_name" \
     --userns "keep-id:uid=1000,gid=1000" \
     --cap-add NET_ADMIN \
     --dns 9.9.9.9 --dns 1.1.1.1 \
     --sysctl net.ipv6.conf.all.disable_ipv6=1 \
     -e "TERM=${TERM:-xterm-256color}" \
-    "${mounts[@]}" -w "$project" "$image" claude "$@"
+    "${mounts[@]}" -w "$project_dir" "$image_name" claude "$@"

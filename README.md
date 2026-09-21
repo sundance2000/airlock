@@ -73,9 +73,13 @@ Two directories hold the rest:
 
 ```
 ~/.local/share/airlock/
-├── image/     the Containerfile the image is built from
+├── image/     Containerfile, entrypoint and egress.nft, put there by install.sh
 └── <hash>/    -> ~ in this folder's container: shell history, pip --user
 ```
+
+`bin/airlock` reads the image definition from that one absolute path, so
+`./install.sh` has to run once before the first `claude`, and again after you
+change anything under `image/` in this repo.
 
 ## Security model
 
@@ -102,7 +106,7 @@ exec setpriv --reuid=1000 --regid=1000 --init-groups \
     --bounding-set=-net_admin,-net_raw -- "$@"
 ```
 
-The rules in `share/egress.nft` reject every private range (RFC1918, CGNAT,
+The rules in `image/egress.nft` reject every private range (RFC1918, CGNAT,
 link-local, loopback, multicast and the IPv6 equivalents). Dropping the two
 capabilities from the **bounding set** is permanent and inherited by every
 later process, so `sudo` inside the container cannot get them back and cannot
