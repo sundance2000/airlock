@@ -1,4 +1,6 @@
-FROM docker.io/library/python:3.13-bookworm
+# trixie, not bookworm: the rtk arm64 build needs glibc 2.39 and bookworm
+# only has 2.36.
+FROM docker.io/library/python:3.13-trixie
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates curl fd-find git jq less nano nftables \
@@ -27,12 +29,14 @@ ARG rebuild=0
 # that path is a mount at runtime.
 RUN mkdir -p /opt/claude \
  && curl -fsSL https://claude.ai/install.sh | HOME=/opt/claude bash \
- && ln -sf /opt/claude/.local/bin/claude /usr/local/bin/claude
+ && ln -sf /opt/claude/.local/bin/claude /usr/local/bin/claude \
+ && claude --version
 
 # rtk compresses command output for agents. Its installer would default to
 # ~/.local/bin, which the runtime mount hides, so it is sent to /usr/local/bin.
 RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh \
-      | RTK_INSTALL_DIR=/usr/local/bin sh
+      | RTK_INSTALL_DIR=/usr/local/bin sh \
+ && rtk --version
 
 ENV HOME=/home/claude \
     SHELL=/bin/zsh \
