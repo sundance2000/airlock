@@ -113,7 +113,7 @@ sharing it; mount it read-only and Claude Code cannot log in or write a
 session.
 
 Every start — the first one and every restart — runs the image entrypoint as
-root with `CAP_NET_ADMIN`, in a fresh network namespace:
+root with `CAP_NET_ADMIN` and `CAP_SETPCAP`, in a fresh network namespace:
 
 ```sh
 nft -f /etc/airlock/egress.nft
@@ -122,10 +122,10 @@ exec setpriv --reuid=1000 --regid=1000 --keep-groups \
 ```
 
 The rules in `image/egress.nft` reject every private range (RFC1918, CGNAT,
-link-local, loopback, multicast and the IPv6 equivalents). Dropping the two
-capabilities from the **bounding set** is permanent and inherited by every
-later process, so `sudo` inside the container cannot get them back and cannot
-touch the rules. If `nft` fails, the entrypoint exits and Claude never starts.
+link-local, loopback, multicast and the IPv6 equivalents). `CAP_SETPCAP` is
+what allows the drop itself. Dropping the two capabilities from the **bounding
+set** is permanent and inherited by every later process, so `sudo` inside the
+container cannot get them back and cannot touch the rules. If `nft` fails, the entrypoint exits and Claude never starts.
 
 DNS uses `9.9.9.9` and `1.1.1.1` because your router's resolver sits in a
 blocked range. IPv6 is off inside the container. Files created in the container

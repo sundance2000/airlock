@@ -65,7 +65,7 @@ fi
 
 exec podman run -it --name "$container_name" \
     --userns "keep-id:uid=1000,gid=1000" \
-    --cap-add NET_ADMIN \
+    --cap-add NET_ADMIN,SETPCAP \
     --dns 9.9.9.9 --dns 1.1.1.1 \
     --sysctl net.ipv6.conf.all.disable_ipv6=1 \
     -e "TERM=${TERM:-xterm-256color}" \
