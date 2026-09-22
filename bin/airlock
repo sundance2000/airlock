@@ -39,6 +39,12 @@ esac
 podman image exists "$image_name" || build_image
 
 mkdir -p "$container_home" "$HOME/.claude"
+# Claude Code keeps ~/.claude.json beside ~/.claude rather than inside it, and
+# refuses to start without it. Put it in the mounted directory and link to it,
+# so it holds the account for every folder instead of one per folder.
+[ -f "$HOME/.claude/claude.json" ] || echo '{}' > "$HOME/.claude/claude.json"
+ln -sfn .claude/claude.json "$container_home/.claude.json"
+
 # Your real ~/.claude, so login, settings and sessions are the same inside and
 # out. ~/.zshrc is read-only because nothing in there needs to write it.
 mounts=(-v "$project_dir:$project_dir" -v "$container_home:/home/claude" -v "$HOME/.claude:/home/claude/.claude")

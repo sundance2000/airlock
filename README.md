@@ -63,6 +63,13 @@ it. What is in it that points at Homebrew or oh-my-zsh will not resolve there;
 the container's own history and prompt settings sit in `/etc/zsh/zshrc`, which
 zsh reads first, so yours still wins where they overlap.
 
+Claude Code also keeps a `~/.claude.json` beside that directory — account,
+machine id, onboarding state — and refuses to start without it. airlock puts
+it in `~/.claude/claude.json` and links to it from each container home, so it
+is shared like the rest and not recreated per folder. It is separate from your
+Mac's own `~/.claude.json`, so the first start inside airlock asks the usual
+first-run questions once.
+
 Because `~/.claude` is the same for every folder, you log in **once**. Sessions
 belong to the folder they were started in — Claude Code keys them by path, and
 the folder is mounted at its real path — so the sessions are also there if you
