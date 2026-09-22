@@ -29,6 +29,11 @@ RUN mkdir -p /opt/claude \
  && curl -fsSL https://claude.ai/install.sh | HOME=/opt/claude bash \
  && ln -sf /opt/claude/.local/bin/claude /usr/local/bin/claude
 
+# rtk compresses command output for agents. Its installer would default to
+# ~/.local/bin, which the runtime mount hides, so it is sent to /usr/local/bin.
+RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh \
+      | RTK_INSTALL_DIR=/usr/local/bin sh
+
 ENV HOME=/home/claude \
     SHELL=/bin/zsh \
     LANG=C.UTF-8 \
