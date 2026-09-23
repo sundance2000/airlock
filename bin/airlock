@@ -61,6 +61,11 @@ ln -sfn .claude/claude.json "$container_home/.claude.json"
 mounts=(-v "$project_dir:$project_dir" -v "$container_home:/home/claude" -v "$HOME/.claude:/home/claude/.claude")
 [ -f "$HOME/.zshrc" ] && mounts+=(-v "$HOME/.zshrc:/home/claude/.zshrc:ro")
 
+# What the terminal can render. Without COLORTERM a 24-bit prompt falls back
+# to 256 colours and looks different from the same terminal outside.
+colors=(-e "TERM=${TERM:-xterm-256color}")
+[ -n "${COLORTERM:-}" ] && colors+=(-e "COLORTERM=$COLORTERM")
+
 # One terminal at a time: a second would end up sharing the first one's tty.
 if [ -n "$(podman ps -q --filter "name=^$container_name$")" ]; then
     die "already running in this folder"
@@ -79,5 +84,4 @@ exec podman run -it --name "$container_name" \
     --cap-add NET_ADMIN,SETPCAP \
     --dns 9.9.9.9 --dns 1.1.1.1 \
     --sysctl net.ipv6.conf.all.disable_ipv6=1 \
-    -e "TERM=${TERM:-xterm-256color}" \
-    "${mounts[@]}" -w "$project_dir" "$image_name" claude "$@"
+    "${colors[@]}" "${mounts[@]}" -w "$project_dir" "$image_name" claude "$@"
