@@ -2,9 +2,11 @@
 # only has 2.36.
 FROM docker.io/library/python:3.13-trixie
 
+# ncurses-term carries the terminfo entries for terminals a mac is likely to
+# report through TERM, such as xterm-ghostty or xterm-kitty.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates curl fd-find git jq less nano nftables \
-      openssh-client procps ripgrep sudo unzip zsh \
+      ncurses-term openssh-client procps ripgrep sudo unzip zsh \
  && rm -rf /var/lib/apt/lists/* \
  && ln -sf "$(command -v fdfind)" /usr/local/bin/fd
 
