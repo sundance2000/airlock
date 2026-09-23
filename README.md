@@ -3,7 +3,8 @@
 Run **Claude Code** in a Podman container: it sees only the current directory
 and the internet — not your Mac, not your LAN. The image is a Python one
 (`python:3.13-trixie`) with Claude Code installed natively — no Node, no npm
-— plus git, ripgrep, fd, jq and [rtk](https://github.com/rtk-ai/rtk).
+— plus git, ripgrep, fd, jq, oh-my-posh and
+[rtk](https://github.com/rtk-ai/rtk).
 
 ```sh
 cd ~/code/my-project

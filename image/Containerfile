@@ -4,7 +4,7 @@ FROM docker.io/library/python:3.13-trixie
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates curl fd-find git jq less nano nftables \
-      openssh-client procps ripgrep sudo zsh \
+      openssh-client procps ripgrep sudo unzip zsh \
  && rm -rf /var/lib/apt/lists/* \
  && ln -sf "$(command -v fdfind)" /usr/local/bin/fd
 
@@ -31,6 +31,21 @@ RUN mkdir -p /opt/claude \
  && curl -fsSL https://claude.ai/install.sh | HOME=/opt/claude bash \
  && ln -sf /opt/claude/.local/bin/claude /usr/local/bin/claude \
  && claude --version
+
+# oh-my-posh, taken from its release rather than through its install script,
+# which wants to write into $HOME. dpkg prints the same architecture names the
+# project uses for its assets: arm64 and amd64.
+ENV POSH_THEMES_PATH=/usr/local/share/oh-my-posh/themes
+RUN arch=$(dpkg --print-architecture) \
+ && curl -fsSL -o /usr/local/bin/oh-my-posh \
+      "https://github.com/JanDeDobbeleer/oh-my-posh/releases/latest/download/posh-linux-$arch" \
+ && chmod 0755 /usr/local/bin/oh-my-posh \
+ && mkdir -p "$POSH_THEMES_PATH" \
+ && curl -fsSL -o /tmp/themes.zip \
+      https://github.com/JanDeDobbeleer/oh-my-posh/releases/latest/download/themes.zip \
+ && unzip -q /tmp/themes.zip -d "$POSH_THEMES_PATH" \
+ && rm /tmp/themes.zip \
+ && oh-my-posh --version
 
 # rtk compresses command output for agents. Its installer would default to
 # ~/.local/bin, which the runtime mount hides, so it is sent to /usr/local/bin.
