@@ -9,10 +9,26 @@ project_dir=$(pwd -P)                                                # the folde
 project_id=$(printf '%s' "$project_dir" | shasum -a 256 | cut -c1-12)
 container_name="airlock-$(basename "$project_dir")-$project_id"
 container_home="$HOME/.local/share/airlock/$project_id"              # mounted as ~ inside the container
+build_stamp="$HOME/.local/share/airlock/image-built"                 # touched after every build, to spot a newer image_dir
 
 die() { printf 'airlock: %s\n' "$*" >&2; exit 1; }
 
-build_image() { podman build "$@" -t "$image_name" -f "$image_dir/Containerfile" "$image_dir"; }
+build_image() {
+    podman build "$@" -t "$image_name" -f "$image_dir/Containerfile" "$image_dir"
+    # Containers keep the image they were built from, so the old ones have to
+    # go for a new image to take effect. Running ones are left alone.
+    for stale in $(podman ps -aq --filter "name=^airlock-" --filter status=created --filter status=exited); do
+        podman rm -f "$stale" >/dev/null
+    done
+    touch "$build_stamp"
+}
+
+# Stale once install.sh has copied a newer image definition into place.
+image_is_current() {
+    podman image exists "$image_name" || return 1
+    [ -f "$build_stamp" ] || return 1
+    [ -z "$(find "$image_dir" -newer "$build_stamp")" ]
+}
 
 case "$project_dir" in
     "/" | "$HOME") die "cd into a project folder first" ;;
@@ -23,11 +39,6 @@ esac
 case "${1:-}" in
     update)
         build_image --build-arg "rebuild=$(date +%s)"
-        # Containers keep the image they were built from, so a rebuilt image
-        # only takes effect once they are gone. Running ones are left alone.
-        for stale in $(podman ps -aq --filter "name=^airlock-" --filter status=created --filter status=exited); do
-            podman rm -f "$stale" >/dev/null
-        done
         exit 0 ;;
     reset)
         podman rm -f "$container_name" >/dev/null 2>&1 || true
@@ -36,7 +47,7 @@ case "${1:-}" in
         exit 0 ;;
 esac
 
-podman image exists "$image_name" || build_image
+image_is_current || build_image
 
 mkdir -p "$container_home" "$HOME/.claude"
 # Claude Code keeps ~/.claude.json beside ~/.claude rather than inside it, and
