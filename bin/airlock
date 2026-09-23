@@ -9,6 +9,7 @@ project_dir=$(pwd -P)                                                # the folde
 project_id=$(printf '%s' "$project_dir" | shasum -a 256 | cut -c1-12)
 container_name="airlock-$(basename "$project_dir")-$project_id"
 container_home="$HOME/.local/share/airlock/$project_id"              # mounted as ~ inside the container
+container_stamp="$HOME/.local/share/airlock/$project_id.created"     # when that container was made, to spot a newer airlock
 build_stamp="$HOME/.local/share/airlock/image-built"                 # touched after every build, to spot a newer image_dir
 
 die() { printf 'airlock: %s\n' "$*" >&2; exit 1; }
@@ -21,6 +22,14 @@ build_image() {
         podman rm -f "$stale" >/dev/null
     done
     touch "$build_stamp"
+}
+
+# Stale once this script has changed, because a container keeps the flags it
+# was created with - a new COLORTERM or mount never reaches an old one.
+container_is_current() {
+    podman container exists "$container_name" || return 1
+    [ -f "$container_stamp" ] || return 1
+    [ -z "$(find "$0" -newer "$container_stamp")" ]
 }
 
 # Stale once install.sh has copied a newer image definition into place.
@@ -42,7 +51,7 @@ case "${1:-}" in
         exit 0 ;;
     reset)
         podman rm -f "$container_name" >/dev/null 2>&1 || true
-        rm -rf "$container_home"
+        rm -rf "$container_home" "$container_stamp"
         printf 'airlock: removed the container and home for %s\n' "$project_dir"
         exit 0 ;;
 esac
@@ -71,14 +80,15 @@ if [ -n "$(podman ps -q --filter "name=^$container_name$")" ]; then
     die "already running in this folder"
 fi
 
-if podman container exists "$container_name"; then
+if container_is_current && [ "$#" -eq 0 ]; then
     # Restarting runs the entrypoint again, which resumes this folder's
     # session; everything apt installed in the container is still present.
-    [ "$#" -eq 0 ] && exec podman start --attach --interactive "$container_name"
-    # Arguments cannot reach a container that already exists, so replace it.
-    podman rm -f "$container_name" >/dev/null
+    exec podman start --attach --interactive "$container_name"
 fi
 
+# Arguments and changed flags cannot reach a container that already exists.
+podman rm -f "$container_name" >/dev/null 2>&1 || true
+touch "$container_stamp"
 exec podman run -it --name "$container_name" \
     --userns "keep-id:uid=1000,gid=1000" \
     --cap-add NET_ADMIN,SETPCAP \

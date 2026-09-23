@@ -99,7 +99,9 @@ rebuilding although nothing here changed, to pull in new versions of Claude
 Code, rtk and oh-my-posh.
 
 Either way the rebuild also removes the containers that are still on the old
-image, because a container keeps the image it was built from.
+image, because a container keeps the image it was built from. A container also
+keeps the flags it was created with — mounts, capabilities, `COLORTERM` — so an
+airlock newer than the container replaces it instead of restarting it.
 
 ## Security model
 
