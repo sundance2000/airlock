@@ -1,0 +1,71 @@
+# trixie, not bookworm: the rtk arm64 build needs glibc 2.39 and bookworm
+# only has 2.36.
+FROM docker.io/library/python:3.13-trixie
+
+# ncurses-term carries the terminfo entries for terminals a mac is likely to
+# report through TERM, such as xterm-ghostty or xterm-kitty.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential ca-certificates curl fd-find git jq less nano nftables \
+      ncurses-term openssh-client procps ripgrep sudo unzip zsh \
+ && rm -rf /var/lib/apt/lists/* \
+ && ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+
+RUN useradd --create-home --uid 1000 --shell /bin/zsh claude \
+ && printf 'claude ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/claude \
+ && chmod 0440 /etc/sudoers.d/claude
+
+# History and prompt for the container. /home/claude is a mount at runtime, so
+# this belongs in the system-wide file; the user's own ~/.zshrc is read after
+# it and wins.
+RUN printf '%s\n' \
+      'HISTFILE=~/.zsh_history' \
+      'HISTSIZE=100000' \
+      'SAVEHIST=100000' \
+      'setopt append_history inc_append_history' \
+      "PROMPT='[airlock] %~ %# '" \
+      > /etc/zsh/zshrc
+
+# `airlock update` passes a new value here to reinstall Claude Code.
+ARG rebuild=0
+# Native install, no node and no npm. It lands outside /home/claude because
+# that path is a mount at runtime.
+RUN mkdir -p /opt/claude \
+ && curl -fsSL https://claude.ai/install.sh | HOME=/opt/claude bash \
+ && ln -sf /opt/claude/.local/bin/claude /usr/local/bin/claude \
+ && claude --version
+
+# oh-my-posh, taken from its release rather than through its install script,
+# which wants to write into $HOME. dpkg prints the same architecture names the
+# project uses for its assets: arm64 and amd64.
+ENV POSH_THEMES_PATH=/usr/local/share/oh-my-posh/themes
+RUN arch=$(dpkg --print-architecture) \
+ && curl -fsSL -o /usr/local/bin/oh-my-posh \
+      "https://github.com/JanDeDobbeleer/oh-my-posh/releases/latest/download/posh-linux-$arch" \
+ && chmod 0755 /usr/local/bin/oh-my-posh \
+ && mkdir -p "$POSH_THEMES_PATH" \
+ && curl -fsSL -o /tmp/themes.zip \
+      https://github.com/JanDeDobbeleer/oh-my-posh/releases/latest/download/themes.zip \
+ && unzip -q /tmp/themes.zip -d "$POSH_THEMES_PATH" \
+ && rm /tmp/themes.zip \
+ && oh-my-posh --version
+
+# rtk compresses command output for agents. Its installer would default to
+# ~/.local/bin, which the runtime mount hides, so it is sent to /usr/local/bin.
+RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh \
+      | RTK_INSTALL_DIR=/usr/local/bin sh \
+ && rtk --version
+
+ENV HOME=/home/claude \
+    SHELL=/bin/zsh \
+    LANG=C.UTF-8 \
+    DISABLE_AUTOUPDATER=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PATH=/home/claude/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+
+COPY egress.nft /etc/airlock/egress.nft
+COPY entrypoint /usr/local/bin/airlock-entrypoint
+RUN chmod 0755 /usr/local/bin/airlock-entrypoint
+
+# Starts as root for the rules, drops to uid 1000 for everything after.
+ENTRYPOINT ["/usr/local/bin/airlock-entrypoint"]
+CMD ["claude"]

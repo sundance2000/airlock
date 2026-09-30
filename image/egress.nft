@@ -1,0 +1,18 @@
+# Internet yes, private networks no. Applied by the entrypoint at startup.
+# reject, not drop, so tools fail at once instead of hanging.
+
+table inet airlock {
+    chain output {
+        type filter hook output priority filter; policy accept;
+
+        oifname "lo" accept
+
+        ip daddr {
+            10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,  # private, incl. gvproxy
+            100.64.0.0/10,                              # CGNAT, Tailscale
+            169.254.0.0/16, 127.0.0.0/8, 224.0.0.0/4
+        } reject with icmpx type admin-prohibited
+
+        ip6 daddr { fc00::/7, fe80::/10, ::1 } reject with icmpx type admin-prohibited
+    }
+}
