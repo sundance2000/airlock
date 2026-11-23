@@ -39,6 +39,23 @@ check "host.containers.internal blocked" fail "curl -m 3 http://host.containers.
 check "private 10/8 blocked"        fail "curl -m 3 http://10.0.0.1"
 check "tailscale range blocked"     fail "curl -m 3 http://100.64.0.1"
 
+# A published port has to answer through the egress rules, whose private
+# ranges include the gateway the connection comes in from.
+port_container="airlock-test-port-$$"
+podman run -d --rm --name "$port_container" \
+    --userns "keep-id:uid=1000,gid=1000" \
+    --cap-add NET_ADMIN \
+    --sysctl net.ipv6.conf.all.disable_ipv6=1 \
+    -p 127.0.0.1:18080:8000 \
+    "$image_name" python3 -m http.server 8000 >/dev/null
+published=fail
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -fsS -m 2 -o /dev/null http://127.0.0.1:18080/; then published=pass; break; fi
+    sleep 1
+done
+podman rm -f "$port_container" >/dev/null 2>&1
+if [ "$published" = pass ]; then ok "published port answers"; else bad "published port answers"; fi
+
 echo "privileges"
 check "runs as uid 1000"            pass "test \$(id -u) -eq 1000"
 check "cannot flush the rules"      fail "sudo nft flush ruleset"

@@ -41,11 +41,13 @@ build_image() {
 }
 
 # Stale once this script has changed, because a container keeps the flags it
-# was created with - a new COLORTERM or mount never reaches an old one.
+# was created with - a new COLORTERM or mount never reaches an old one. The
+# same goes for its ports, which it carries in a label to compare against.
 container_is_current() {
     podman container exists "$container_name" || return 1
     [ -f "$container_stamp" ] || return 1
-    [ -z "$(find "$0" -newer "$container_stamp")" ]
+    [ -z "$(find "$0" -newer "$container_stamp")" ] || return 1
+    [ "$(podman container inspect -f '{{index .Config.Labels "airlock.ports"}}' "$container_name")" = "$port_list" ]
 }
 
 # Stale once install.sh has copied a newer image definition into place.
@@ -100,6 +102,34 @@ if [ "$tool" = herdr ]; then
     fi
 fi
 
+# Ports to publish, from .airlock in this folder: `port 3000` or
+# `port 8080:80` (Mac:container), one per line, # starts a comment. Only ever
+# on the Mac's 127.0.0.1, never the LAN, because whatever runs in the
+# container can write that file when it does not exist yet. When it does, it
+# is mounted read-only over itself, so the container cannot change it.
+ports=()
+port_list=""
+config="$project_dir/.airlock"
+if [ -f "$config" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        read -r key value rest <<< "${line%%#*}"
+        case "${key:-}" in
+            "") continue ;;
+            port) ;;
+            *) die "$config: unknown setting '$key'" ;;
+        esac
+        [ -z "${rest:-}" ] || die "$config: one port per line: '$line'"
+        case "${value:-}" in
+            "" | *[!0-9:]* | :* | *: | *:*:*) die "$config: not a port or mac:container pair: '$line'" ;;
+            *:*) ;;
+            *) value="$value:$value" ;;
+        esac
+        ports+=(-p "127.0.0.1:$value")
+        port_list="$port_list $value"
+    done < "$config"
+    mounts+=(-v "$config:$config:ro")
+fi
+
 # What the terminal can render. Without COLORTERM a 24-bit prompt falls back
 # to 256 colours and looks different from the same terminal outside.
 colors=(-e "TERM=${TERM:-xterm-256color}")
@@ -124,4 +154,5 @@ exec podman run -it --name "$container_name" \
     --cap-add NET_ADMIN,SETPCAP \
     --dns 9.9.9.9 --dns 1.1.1.1 \
     --sysctl net.ipv6.conf.all.disable_ipv6=1 \
+    --label "airlock.ports=$port_list" ${ports[@]+"${ports[@]}"} \
     "${colors[@]}" "${mounts[@]}" -w "$project_dir" "$image_name" "$tool" "$@"

@@ -138,6 +138,33 @@ on your Mac. Settings in it that point at Mac paths, such as a Homebrew
 and an entry into `~/.claude/settings.json`. Both are shared with your Mac, so
 whichever side installs it, the other side runs the same hook too.
 
+## Ports
+
+Nothing in the container is reachable from outside unless you publish it. A
+file named `.airlock` in the project folder lists the ports, one per line:
+
+```
+# a dev server, the same port on both sides
+port 3000
+# Mac port 8080 to container port 80
+port 8080:80
+```
+
+They are published on the Mac's `127.0.0.1` only, never on the LAN, and there
+is no way to ask for anything else. The service inside has to listen on
+`0.0.0.0`, not `127.0.0.1`: the connection arrives over the container's
+network interface, not its loopback.
+
+The file belongs to you, not to the container: airlock mounts it read-only
+over itself, so nothing running inside can add a port. If it does not exist,
+the container could create it — which is why the worst it could do with that
+is open a port on your Mac's localhost.
+
+A container keeps the ports it was created with, so when the list changes the
+next `claude` replaces the container instead of restarting it. Both `claude`
+and `herdr` publish the same ports, so with ports in `.airlock` only one of
+the two can run in a folder at a time.
+
 ## Security model
 
 What it protects against: accidents and curiosity. An over-eager agent cannot
@@ -164,7 +191,11 @@ exec setpriv --reuid=1000 --regid=1000 --keep-groups \
 ```
 
 The rules in `image/egress.nft` reject every private range (RFC1918, CGNAT,
-link-local, loopback, multicast and the IPv6 equivalents). `CAP_SETPCAP` is
+link-local, loopback, multicast and the IPv6 equivalents). The one exception
+is replies on connections that came in through a published port: they go back
+to Podman's gateway, which is a private address. A connection the container
+opens itself is rejected at its first packet and never counts as one of
+those. `CAP_SETPCAP` is
 what allows the drop itself. Dropping the two capabilities from the **bounding
 set** is permanent and inherited by every later process, so `sudo` inside the
 container cannot get them back and cannot touch the rules. If `nft` fails, the entrypoint exits and Claude never starts.

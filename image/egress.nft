@@ -7,6 +7,13 @@ table inet airlock {
 
         oifname "lo" accept
 
+        # Replies on connections that came in through a published port. They
+        # arrive from Podman's gateway, a private address, and the rules below
+        # would reject the answer. A connection the container opens itself
+        # never gets here: its first packet is rejected before it is tracked
+        # as established.
+        ct state established accept
+
         ip daddr {
             10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,  # private, incl. gvproxy
             100.64.0.0/10,                              # CGNAT, Tailscale
