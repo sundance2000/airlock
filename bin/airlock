@@ -1,15 +1,31 @@
 #!/usr/bin/env bash
-# airlock - run Claude Code in a container that sees this folder and the
-# internet, and nothing else. macOS + Podman, bash 3.2.
+# airlock - run Claude Code, or herdr with Claude Code in its panes, in a
+# container that sees this folder and the internet, and nothing else.
+# macOS + Podman, bash 3.2.
 set -euo pipefail
+
+# What to run is the name this script is called by: `claude` or `herdr`, both
+# links made by install.sh. Called as `airlock` it runs Claude Code.
+case "$(basename "$0")" in
+    herdr) tool=herdr ;;
+    *)     tool=claude ;;
+esac
 
 image_name=localhost/airlock:latest                                  # the image we build and run
 image_dir="$HOME/.local/share/airlock/image"                         # Containerfile and the two files it copies, put here by install.sh
 project_dir=$(pwd -P)                                                # the folder you are in, the only one the container sees
 project_id=$(printf '%s' "$project_dir" | shasum -a 256 | cut -c1-12)
-container_name="airlock-$(basename "$project_dir")-$project_id"
-container_home="$HOME/.local/share/airlock/$project_id"              # mounted as ~ inside the container
-container_stamp="$HOME/.local/share/airlock/$project_id.created"     # when that container was made, to spot a newer airlock
+claude_container="airlock-$(basename "$project_dir")-$project_id"     # this folder's Claude Code container
+herdr_container="airlock-herdr-$(basename "$project_dir")-$project_id" # and its herdr container, kept apart from it
+herdr_volume="airlock-herdr-$project_id"                              # ~/.config/herdr in that container: sockets and sessions
+container_home="$HOME/.local/share/airlock/$project_id"              # mounted as ~ inside both containers
+if [ "$tool" = herdr ]; then
+    container_name=$herdr_container
+    container_stamp="$HOME/.local/share/airlock/$project_id.herdr.created" # when that container was made, to spot a newer airlock
+else
+    container_name=$claude_container
+    container_stamp="$HOME/.local/share/airlock/$project_id.created"
+fi
 build_stamp="$HOME/.local/share/airlock/image-built"                 # touched after every build, to spot a newer image_dir
 
 die() { printf 'airlock: %s\n' "$*" >&2; exit 1; }
@@ -50,9 +66,11 @@ case "${1:-}" in
         build_image --build-arg "rebuild=$(date +%s)"
         exit 0 ;;
     reset)
-        podman rm -f "$container_name" >/dev/null 2>&1 || true
-        rm -rf "$container_home" "$container_stamp"
-        printf 'airlock: removed the container and home for %s\n' "$project_dir"
+        # Both containers, because they share the home that goes with them.
+        podman rm -f "$claude_container" "$herdr_container" >/dev/null 2>&1 || true
+        podman volume rm -f "$herdr_volume" >/dev/null 2>&1 || true
+        rm -rf "$container_home" "$HOME/.local/share/airlock/$project_id".*created
+        printf 'airlock: removed the containers and home for %s\n' "$project_dir"
         exit 0 ;;
 esac
 
@@ -69,6 +87,18 @@ ln -sfn .claude/claude.json "$container_home/.claude.json"
 # out. ~/.zshrc is read-only because nothing in there needs to write it.
 mounts=(-v "$project_dir:$project_dir" -v "$container_home:/home/claude" -v "$HOME/.claude:/home/claude/.claude")
 [ -f "$HOME/.zshrc" ] && mounts+=(-v "$HOME/.zshrc:/home/claude/.zshrc:ro")
+# herdr talks to its server through unix sockets in ~/.config/herdr, and
+# those cannot be connected to on a directory shared from the Mac. So that
+# directory is a Podman volume, which lives in the VM and outlives the
+# container. :U hands it to uid 1000.
+if [ "$tool" = herdr ]; then
+    mounts+=(-v "$herdr_volume:/home/claude/.config/herdr:U")
+    # Only the config file from the Mac: the rest of its ~/.config/herdr is
+    # the Mac's own server - socket, logs, sessions.
+    if [ -f "$HOME/.config/herdr/config.toml" ]; then
+        mounts+=(-v "$HOME/.config/herdr/config.toml:/home/claude/.config/herdr/config.toml:ro")
+    fi
+fi
 
 # What the terminal can render. Without COLORTERM a 24-bit prompt falls back
 # to 256 colours and looks different from the same terminal outside.
@@ -94,4 +124,4 @@ exec podman run -it --name "$container_name" \
     --cap-add NET_ADMIN,SETPCAP \
     --dns 9.9.9.9 --dns 1.1.1.1 \
     --sysctl net.ipv6.conf.all.disable_ipv6=1 \
-    "${colors[@]}" "${mounts[@]}" -w "$project_dir" "$image_name" claude "$@"
+    "${colors[@]}" "${mounts[@]}" -w "$project_dir" "$image_name" "$tool" "$@"

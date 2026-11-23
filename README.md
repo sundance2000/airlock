@@ -3,8 +3,9 @@
 Run **Claude Code** in a Podman container: it sees only the current directory
 and the internet — not your Mac, not your LAN. The image is a Python one
 (`python:3.13-trixie`) with Claude Code installed natively — no Node, no npm
-— plus git, ripgrep, fd, jq, oh-my-posh and
-[rtk](https://github.com/rtk-ai/rtk).
+— plus git, ripgrep, fd, jq, oh-my-posh,
+[rtk](https://github.com/rtk-ai/rtk) and
+[herdr](https://github.com/ogulcancelik/herdr).
 
 ```sh
 cd ~/code/my-project
@@ -26,17 +27,21 @@ git clone https://github.com/sundance2000/airlock.git
 cd airlock && ./install.sh
 ```
 
-This installs `~/.local/bin/airlock` and links `claude` to it. If you already
-have a native Claude Code, `~/.local/bin` has to come first in your `PATH` —
-the installer warns you if it does not. `./install.sh --no-link` skips the link.
+This installs `~/.local/bin/airlock` and links `claude` and `herdr` to it. If
+you already have a native Claude Code or herdr, `~/.local/bin` has to come
+first in your `PATH` — the installer warns you if it does not.
+`./install.sh --no-link` skips the links.
 
 ## Commands
 
 | | |
 |---|---|
 | `claude` | start here and resume the last session |
+| `herdr` | start herdr here, in a container of its own |
 | `claude update` | rebuild the image to pick up new tool versions |
-| `claude reset` | delete this folder's container and home |
+| `claude reset` | delete this folder's containers and home |
+
+`herdr update` and `herdr reset` do the same as their `claude` counterparts.
 
 `update` and `reset` are the only words airlock takes; `update` therefore
 rebuilds the image instead of reaching Claude Code's own updater. Everything
@@ -102,6 +107,36 @@ Either way the rebuild also removes the containers that are still on the old
 image, because a container keeps the image it was built from. A container also
 keeps the flags it was created with — mounts, capabilities, `COLORTERM` — so an
 airlock newer than the container replaces it instead of restarting it.
+
+## herdr
+
+`herdr` in a project folder starts [herdr](https://github.com/ogulcancelik/herdr)
+in a second container, `airlock-herdr-<name>-<hash>`, with the same rules,
+mounts and home as the Claude Code one. Its panes open the container's zsh, so
+`claude` typed in a pane is the Claude Code inside the container — no nested
+containers, no Podman inside. Both containers can run side by side in the same
+folder.
+
+herdr normally keeps its server running after the client detaches. In airlock
+the client is the container's main process, so detaching or closing the
+terminal stops the container and the server with it, like `claude` does.
+
+Its state — sockets, logs, `session.json` — lives in `~/.config/herdr`, and
+that directory is a Podman volume, `airlock-herdr-<hash>`, not part of the
+container home on your Mac: herdr's client and server talk through unix
+sockets, and a socket on a directory shared from the Mac can be created but
+not connected to. The volume lives in the Podman VM and survives a new
+container, so the next `herdr` restores the workspace and, with the Claude
+integration, the agents in it. `herdr reset` deletes it with the rest.
+
+Your Mac's `~/.config/herdr/config.toml`, if there is one, is mounted
+read-only. The rest of that directory is not: it belongs to the herdr server
+on your Mac. Settings in it that point at Mac paths, such as a Homebrew
+`default_shell`, will not resolve in the container.
+
+`herdr integration install claude` writes a hook script into `~/.claude/hooks`
+and an entry into `~/.claude/settings.json`. Both are shared with your Mac, so
+whichever side installs it, the other side runs the same hook too.
 
 ## Security model
 
