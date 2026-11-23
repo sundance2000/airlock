@@ -45,6 +45,10 @@ check "cannot flush the rules"      fail "sudo nft flush ruleset"
 check "cannot even read them"       fail "sudo nft list ruleset"
 check "sudo otherwise works"        pass "sudo -n true"
 
+echo "tools"
+check "claude is installed"         pass "claude --version"
+check "herdr is installed"          pass "herdr --version"
+
 echo "filesystem"
 check "project is mounted"          pass "test -d '$project_dir'"
 check "mac home not visible"        fail "test -e '$HOME/Library'"

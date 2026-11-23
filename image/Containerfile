@@ -25,7 +25,8 @@ RUN printf '%s\n' \
       "PROMPT='[airlock] %~ %# '" \
       > /etc/zsh/zshrc
 
-# `airlock update` passes a new value here to reinstall Claude Code.
+# `airlock update` passes a new value here to reinstall Claude Code, and with
+# it everything below: oh-my-posh, rtk and herdr.
 ARG rebuild=0
 # Native install, no node and no npm. It lands outside /home/claude because
 # that path is a mount at runtime.
@@ -54,6 +55,12 @@ RUN arch=$(dpkg --print-architecture) \
 RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh \
       | RTK_INSTALL_DIR=/usr/local/bin sh \
  && rtk --version
+
+# herdr, the terminal multiplexer for agents, for `herdr` on the Mac. Same
+# reason as rtk: its default ~/.local/bin is hidden by the mount.
+RUN curl -fsSL https://herdr.dev/install.sh \
+      | HERDR_INSTALL_DIR=/usr/local/bin sh \
+ && herdr --version
 
 ENV HOME=/home/claude \
     SHELL=/bin/zsh \
