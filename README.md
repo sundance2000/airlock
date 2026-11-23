@@ -181,13 +181,16 @@ next time you start Claude Code outside the container. That is the price of
 sharing it; mount it read-only and Claude Code cannot log in or write a
 session.
 
-Every start — the first one and every restart — runs the image entrypoint as
-root with `CAP_NET_ADMIN` and `CAP_SETPCAP`, in a fresh network namespace:
+Every start — the first one and every restart — runs the image entrypoint
+with `CAP_NET_ADMIN` and `CAP_SETPCAP`, in a fresh network namespace. It runs
+as uid 1000, not root: with `--userns keep-id` Podman starts it as you and
+puts the two capabilities in its ambient and inheritable sets.
 
 ```sh
 nft -f /etc/airlock/egress.nft
 exec setpriv --reuid=1000 --regid=1000 --keep-groups \
-    --bounding-set=-net_admin,-net_raw -- "$@"
+    --inh-caps=-all --ambient-caps=-all \
+    --bounding-set=-net_admin,-net_raw,-setpcap -- "$@"
 ```
 
 The rules in `image/egress.nft` reject every private range (RFC1918, CGNAT,
@@ -195,10 +198,17 @@ link-local, loopback, multicast and the IPv6 equivalents). The one exception
 is replies on connections that came in through a published port: they go back
 to Podman's gateway, which is a private address. A connection the container
 opens itself is rejected at its first packet and never counts as one of
-those. `CAP_SETPCAP` is
-what allows the drop itself. Dropping the two capabilities from the **bounding
-set** is permanent and inherited by every later process, so `sudo` inside the
-container cannot get them back and cannot touch the rules. If `nft` fails, the entrypoint exits and Claude never starts.
+those.
+
+After the rules, two drops. Clearing the inheritable and ambient sets means
+the command — Claude Code, herdr, your shell — runs with no capabilities at
+all. Removing `NET_ADMIN`, `NET_RAW` and `SETPCAP` from the **bounding set**
+is permanent and inherited by every later process, so even `sudo`'s root
+cannot get them back and cannot touch the rules. Both are needed: the
+bounding set only limits what a later exec can gain, not what a process
+already holds, and Podman hands the capabilities over in exactly the sets it
+does not cover. `CAP_SETPCAP` is what allows the drop itself. If `nft` fails,
+the entrypoint exits and Claude never starts.
 
 DNS uses `9.9.9.9` and `1.1.1.1` because your router's resolver sits in a
 blocked range. IPv6 is off inside the container. Files created in the container
