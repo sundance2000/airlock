@@ -5,8 +5,11 @@
 set -euo pipefail
 
 # What to run is the name this script is called by: `claude` or `herdr`, both
-# links made by install.sh. Called as `airlock` it runs Claude Code.
-case "$(basename "$0")" in
+# links made by install.sh. Called as `airlock` it runs Claude Code, and also
+# takes the commands that edit .airlock, which `claude` would mistake for a
+# prompt: `claude add a login button`.
+called_as=$(basename "$0")
+case "$called_as" in
     herdr) tool=herdr ;;
     *)     tool=claude ;;
 esac
@@ -27,6 +30,7 @@ else
     container_stamp="$HOME/.local/share/airlock/$project_id.created"
 fi
 build_stamp="$HOME/.local/share/airlock/image-built"                 # touched after every build, to spot a newer image_dir
+config="$project_dir/.airlock"                                       # this folder's settings: the ports to publish
 
 die() { printf 'airlock: %s\n' "$*" >&2; exit 1; }
 
@@ -50,6 +54,84 @@ container_is_current() {
     [ "$(podman container inspect -f '{{index .Config.Labels "airlock.ports"}}' "$container_name")" = "$port_list" ]
 }
 
+# $1 as mac:container - `3000` becomes 3000:3000 - or a failure if it is not
+# a port or a pair of them. Nothing else gets through: no address, so a port
+# can never be published beyond the Mac's 127.0.0.1.
+port_pair() {
+    local mac inside port
+    case "$1" in
+        "" | *[!0-9:]* | :* | *: | *:*:*) return 1 ;;
+        *:*) mac=${1%%:*} inside=${1#*:} ;;
+        *)   mac=$1 inside=$1 ;;
+    esac
+    for port in "$mac" "$inside"; do
+        [ "${#port}" -le 5 ] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || return 1
+    done
+    printf '%s:%s\n' "$mac" "$inside"
+}
+
+# Each port in .airlock as mac:container, one per line. A line it does not
+# understand stops airlock rather than being skipped.
+config_pairs() {
+    [ -f "$config" ] || return 0
+    local line key value rest pair
+    while IFS= read -r line || [ -n "$line" ]; do
+        read -r key value rest <<< "${line%%#*}"
+        case "${key:-}" in
+            "") continue ;;
+            port) ;;
+            *) die "$config: unknown setting '$key'" ;;
+        esac
+        [ -z "${rest:-}" ] || die "$config: one port per line: '$line'"
+        pair=$(port_pair "${value:-}") || die "$config: not a port or mac:container pair: '$line'"
+        printf '%s\n' "$pair"
+    done < "$config"
+}
+
+# `airlock add port 3000 8080:80`: append to .airlock what is not in it yet.
+add_ports() {
+    local existing pair
+    existing=$(config_pairs)
+    for arg in "$@"; do
+        pair=$(port_pair "$arg") || die "not a port or mac:container pair: $arg"
+        if printf '%s\n' "$existing" | grep -qx "$pair"; then
+            printf 'airlock: port %s is already in %s\n' "$pair" "$config"
+            continue
+        fi
+        # The Mac side can only be published once.
+        if printf '%s\n' "$existing" | grep -q "^${pair%%:*}:"; then
+            die "Mac port ${pair%%:*} is already published in $config"
+        fi
+        printf 'port %s\n' "$pair" >> "$config"
+        existing="$existing
+$pair"
+        printf 'airlock: added port %s\n' "$pair"
+    done
+}
+
+# `airlock remove port 3000`: drop matching lines, keep everything else.
+remove_ports() {
+    local line key value rest pair kept found
+    [ -f "$config" ] || die "$config does not exist"
+    config_pairs >/dev/null
+    for arg in "$@"; do
+        pair=$(port_pair "$arg") || die "not a port or mac:container pair: $arg"
+        kept="" found=""
+        while IFS= read -r line || [ -n "$line" ]; do
+            read -r key value rest <<< "${line%%#*}"
+            if [ "${key:-}" = port ] && [ "$(port_pair "$value")" = "$pair" ]; then
+                found=1
+                continue
+            fi
+            kept="$kept$line
+"
+        done < "$config"
+        [ -n "$found" ] || die "port $pair is not in $config"
+        printf '%s' "$kept" > "$config"
+        printf 'airlock: removed port %s\n' "$pair"
+    done
+}
+
 # Stale once install.sh has copied a newer image definition into place.
 image_is_current() {
     podman image exists "$image_name" || return 1
@@ -60,6 +142,18 @@ image_is_current() {
 case "$project_dir" in
     "/" | "$HOME") die "cd into a project folder first" ;;
 esac
+
+if [ "$called_as" = airlock ]; then
+    case "${1:-} ${2:-}" in
+        "add port" | "remove port")
+            [ "$#" -ge 3 ] || die "usage: airlock $1 port <port|mac:container>..."
+            action=$1
+            shift 2
+            if [ "$action" = add ]; then add_ports "$@"; else remove_ports "$@"; fi
+            printf 'airlock: takes effect the next time claude or herdr starts here\n'
+            exit 0 ;;
+    esac
+fi
 
 [ -f "$image_dir/Containerfile" ] || die "$image_dir is missing - run ./install.sh"
 
@@ -109,24 +203,12 @@ fi
 # is mounted read-only over itself, so the container cannot change it.
 ports=()
 port_list=""
-config="$project_dir/.airlock"
+pairs=$(config_pairs)
+for pair in $pairs; do
+    ports+=(-p "127.0.0.1:$pair")
+    port_list="$port_list $pair"
+done
 if [ -f "$config" ]; then
-    while IFS= read -r line || [ -n "$line" ]; do
-        read -r key value rest <<< "${line%%#*}"
-        case "${key:-}" in
-            "") continue ;;
-            port) ;;
-            *) die "$config: unknown setting '$key'" ;;
-        esac
-        [ -z "${rest:-}" ] || die "$config: one port per line: '$line'"
-        case "${value:-}" in
-            "" | *[!0-9:]* | :* | *: | *:*:*) die "$config: not a port or mac:container pair: '$line'" ;;
-            *:*) ;;
-            *) value="$value:$value" ;;
-        esac
-        ports+=(-p "127.0.0.1:$value")
-        port_list="$port_list $value"
-    done < "$config"
     mounts+=(-v "$config:$config:ro")
 fi
 

@@ -40,13 +40,16 @@ first in your `PATH` — the installer warns you if it does not.
 | `herdr` | start herdr here, in a container of its own |
 | `claude update` | rebuild the image to pick up new tool versions |
 | `claude reset` | delete this folder's containers and home |
+| `airlock add port 3000` | publish a port, see [Ports](#ports) |
+| `airlock remove port 3000` | and take it back |
 
 `herdr update` and `herdr reset` do the same as their `claude` counterparts.
 
 `update` and `reset` are the only words airlock takes; `update` therefore
 rebuilds the image instead of reaching Claude Code's own updater. Everything
 else is passed through unchanged, `claude mcp list` and `claude --model opus`
-included.
+included. `add port` and `remove port` only work as `airlock`, so that
+`claude add a login button` still reaches Claude Code.
 
 ## Containers that stop with the terminal
 
@@ -150,6 +153,10 @@ port 3000
 port 8080:80
 ```
 
+`airlock add port 3000 8080:80` and `airlock remove port 3000` edit it for
+you and refuse what would not work: a Mac port taken twice, a port out of
+range, an address. Other lines and comments are left as they are.
+
 They are published on the Mac's `127.0.0.1` only, never on the LAN, and there
 is no way to ask for anything else. The service inside has to listen on
 `0.0.0.0`, not `127.0.0.1`: the connection arrives over the container's
@@ -196,9 +203,10 @@ exec setpriv --reuid=1000 --regid=1000 --keep-groups \
 The rules in `image/egress.nft` reject every private range (RFC1918, CGNAT,
 link-local, loopback, multicast and the IPv6 equivalents). The one exception
 is replies on connections that came in through a published port: they go back
-to Podman's gateway, which is a private address. A connection the container
-opens itself is rejected at its first packet and never counts as one of
-those.
+to Podman's gateway, which is a private address. The rule takes only packets
+in the reply direction of a connection the other side opened
+(`ct direction reply`), so a connection the container opens itself never
+matches it.
 
 After the rules, two drops. Clearing the inheritable and ambient sets means
 the command — Claude Code, herdr, your shell — runs with no capabilities at
@@ -221,8 +229,9 @@ ordinary internet traffic and is not covered by these rules.
 ## Tests
 
 `tests/acceptance.sh` checks the above against real containers: internet up,
-private ranges down, `sudo nft flush ruleset` denied, mount isolation, file
-ownership. It starts its own throwaway containers with the same flags, so it
+private ranges down, a published port answering while its peer stays closed
+to the container, `.airlock` read-only inside, `sudo nft flush ruleset`
+denied, mount isolation, file ownership. It starts its own throwaway containers with the same flags, so it
 does not touch any container of yours. `shellcheck` runs in CI.
 
 ## License
