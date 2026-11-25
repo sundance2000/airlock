@@ -26,7 +26,7 @@ RUN printf '%s\n' \
       > /etc/zsh/zshrc
 
 # `airlock update` passes a new value here to reinstall Claude Code, and with
-# it everything below: oh-my-posh, rtk and herdr.
+# it everything below: Codex, oh-my-posh, rtk and herdr.
 ARG rebuild=0
 # Native install, no node and no npm. It lands outside /home/claude because
 # that path is a mount at runtime.
@@ -34,6 +34,16 @@ RUN mkdir -p /opt/claude \
  && curl -fsSL https://claude.ai/install.sh | HOME=/opt/claude bash \
  && ln -sf /opt/claude/.local/bin/claude /usr/local/bin/claude \
  && claude --version
+
+# Codex, the standalone musl build from its release - again no node and no
+# npm. uname -m gives the names the project uses for its assets: aarch64 and
+# x86_64. The tarball holds one binary named after the target.
+RUN mkdir /tmp/codex \
+ && curl -fsSL "https://github.com/openai/codex/releases/latest/download/codex-$(uname -m)-unknown-linux-musl.tar.gz" \
+      | tar -xz -C /tmp/codex \
+ && install -m 0755 /tmp/codex/codex-* /usr/local/bin/codex \
+ && rm -rf /tmp/codex \
+ && codex --version
 
 # oh-my-posh, taken from its release rather than through its install script,
 # which wants to write into $HOME. dpkg prints the same architecture names the

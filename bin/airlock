@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# airlock - run Claude Code, or herdr with Claude Code in its panes, in a
+# airlock - run Claude Code, Codex, or herdr with both in its panes, in a
 # container that sees this folder and the internet, and nothing else.
 # macOS + Podman, bash 3.2.
 set -euo pipefail
 
-# What to run is the name this script is called by: `claude` or `herdr`, both
-# links made by install.sh. Called as `airlock` it runs Claude Code, and also
+# What to run is the name this script is called by: `claude`, `codex` or
+# `herdr`, all links made by install.sh. Called as `airlock` it runs Claude Code, and also
 # takes the commands that edit .airlock, which `claude` would mistake for a
 # prompt: `claude add a login button`.
 called_as=$(basename "$0")
 case "$called_as" in
     herdr) tool=herdr ;;
+    codex) tool=codex ;;
     *)     tool=claude ;;
 esac
 
@@ -20,15 +21,20 @@ project_dir=$(pwd -P)                                                # the folde
 project_id=$(printf '%s' "$project_dir" | shasum -a 256 | cut -c1-12)
 claude_container="airlock-$(basename "$project_dir")-$project_id"     # this folder's Claude Code container
 herdr_container="airlock-herdr-$(basename "$project_dir")-$project_id" # and its herdr container, kept apart from it
+codex_container="airlock-codex-$(basename "$project_dir")-$project_id" # and its Codex container
 herdr_volume="airlock-herdr-$project_id"                              # ~/.config/herdr in that container: sockets and sessions
 container_home="$HOME/.local/share/airlock/$project_id"              # mounted as ~ inside both containers
-if [ "$tool" = herdr ]; then
-    container_name=$herdr_container
-    container_stamp="$HOME/.local/share/airlock/$project_id.herdr.created" # when that container was made, to spot a newer airlock
-else
-    container_name=$claude_container
-    container_stamp="$HOME/.local/share/airlock/$project_id.created"
-fi
+case "$tool" in
+    herdr)
+        container_name=$herdr_container
+        container_stamp="$HOME/.local/share/airlock/$project_id.herdr.created" ;; # when that container was made, to spot a newer airlock
+    codex)
+        container_name=$codex_container
+        container_stamp="$HOME/.local/share/airlock/$project_id.codex.created" ;;
+    *)
+        container_name=$claude_container
+        container_stamp="$HOME/.local/share/airlock/$project_id.created" ;;
+esac
 build_stamp="$HOME/.local/share/airlock/image-built"                 # touched after every build, to spot a newer image_dir
 config="$project_dir/.airlock"                                       # this folder's settings: the ports to publish
 
@@ -150,7 +156,7 @@ if [ "$called_as" = airlock ]; then
             action=$1
             shift 2
             if [ "$action" = add ]; then add_ports "$@"; else remove_ports "$@"; fi
-            printf 'airlock: takes effect the next time claude or herdr starts here\n'
+            printf 'airlock: takes effect the next time claude, codex or herdr starts here\n'
             exit 0 ;;
     esac
 fi
@@ -162,8 +168,8 @@ case "${1:-}" in
         build_image --build-arg "rebuild=$(date +%s)"
         exit 0 ;;
     reset)
-        # Both containers, because they share the home that goes with them.
-        podman rm -f "$claude_container" "$herdr_container" >/dev/null 2>&1 || true
+        # All containers, because they share the home that goes with them.
+        podman rm -f "$claude_container" "$codex_container" "$herdr_container" >/dev/null 2>&1 || true
         podman volume rm -f "$herdr_volume" >/dev/null 2>&1 || true
         rm -rf "$container_home" "$HOME/.local/share/airlock/$project_id".*created
         printf 'airlock: removed the containers and home for %s\n' "$project_dir"
@@ -172,16 +178,19 @@ esac
 
 image_is_current || build_image
 
-mkdir -p "$container_home" "$HOME/.claude"
+mkdir -p "$container_home" "$HOME/.claude" "$HOME/.codex"
 # Claude Code keeps ~/.claude.json beside ~/.claude rather than inside it, and
 # refuses to start without it. Put it in the mounted directory and link to it,
 # so it holds the account for every folder instead of one per folder.
 [ -f "$HOME/.claude/claude.json" ] || echo '{}' > "$HOME/.claude/claude.json"
 ln -sfn .claude/claude.json "$container_home/.claude.json"
 
-# Your real ~/.claude, so login, settings and sessions are the same inside and
-# out. ~/.zshrc is read-only because nothing in there needs to write it.
-mounts=(-v "$project_dir:$project_dir" -v "$container_home:/home/claude" -v "$HOME/.claude:/home/claude/.claude")
+# Your real ~/.claude and ~/.codex, so login, settings and sessions are the
+# same inside and out. Both go into every container, so `codex` in a herdr pane
+# or in the Claude Code container's shell finds its login too. ~/.zshrc is
+# read-only because nothing in there needs to write it.
+mounts=(-v "$project_dir:$project_dir" -v "$container_home:/home/claude"
+    -v "$HOME/.claude:/home/claude/.claude" -v "$HOME/.codex:/home/claude/.codex")
 [ -f "$HOME/.zshrc" ] && mounts+=(-v "$HOME/.zshrc:/home/claude/.zshrc:ro")
 # herdr talks to its server through unix sockets in ~/.config/herdr, and
 # those cannot be connected to on a directory shared from the Mac. So that

@@ -47,6 +47,7 @@ fi
 
 echo "network"
 check "internet reachable"          pass "curl -sSI -m 10 https://api.anthropic.com"
+check "openai reachable"            pass "curl -sSI -m 10 https://api.openai.com"
 check "gvproxy host blocked"        fail "curl -m 3 http://192.168.127.254"
 check "host.containers.internal blocked" fail "curl -m 3 http://host.containers.internal"
 check "private 10/8 blocked"        fail "curl -m 3 http://10.0.0.1"
@@ -101,6 +102,7 @@ check "sudo otherwise works"        pass "sudo -n true"
 
 echo "tools"
 check "claude is installed"         pass "claude --version"
+check "codex is installed"          pass "codex --version"
 check "herdr is installed"          pass "herdr --version"
 
 echo "filesystem"

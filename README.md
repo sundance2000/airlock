@@ -1,9 +1,9 @@
 # airlock
 
-Run **Claude Code** in a Podman container: it sees only the current directory
-and the internet — not your Mac, not your LAN. The image is a Python one
-(`python:3.13-trixie`) with Claude Code installed natively — no Node, no npm
-— plus git, ripgrep, fd, jq, oh-my-posh,
+Run **Claude Code** or **Codex** in a Podman container: it sees only the
+current directory and the internet — not your Mac, not your LAN. The image is a
+Python one (`python:3.13-trixie`) with Claude Code and Codex installed natively
+— no Node, no npm — plus git, ripgrep, fd, jq, oh-my-posh,
 [rtk](https://github.com/rtk-ai/rtk) and
 [herdr](https://github.com/ogulcancelik/herdr).
 
@@ -15,7 +15,9 @@ claude
 The container starts, resumes the last session in this folder, and stops again
 when you close the terminal.
 
-> Unofficial community tool, not affiliated with Anthropic.
+`codex` does the same for Codex.
+
+> Unofficial community tool, not affiliated with Anthropic or OpenAI.
 
 ## Install
 
@@ -27,8 +29,8 @@ git clone https://github.com/sundance2000/airlock.git
 cd airlock && ./install.sh
 ```
 
-This installs `~/.local/bin/airlock` and links `claude` and `herdr` to it. If
-you already have a native Claude Code or herdr, `~/.local/bin` has to come
+This installs `~/.local/bin/airlock` and links `claude`, `codex` and `herdr`
+to it. If you already have a native Claude Code, Codex or herdr, `~/.local/bin` has to come
 first in your `PATH` — the installer warns you if it does not.
 `./install.sh --no-link` skips the links.
 
@@ -37,13 +39,15 @@ first in your `PATH` — the installer warns you if it does not.
 | | |
 |---|---|
 | `claude` | start here and resume the last session |
+| `codex` | start Codex here and resume its last session |
 | `herdr` | start herdr here, in a container of its own |
 | `claude update` | rebuild the image to pick up new tool versions |
 | `claude reset` | delete this folder's containers and home |
 | `airlock add port 3000` | publish a port, see [Ports](#ports) |
 | `airlock remove port 3000` | and take it back |
 
-`herdr update` and `herdr reset` do the same as their `claude` counterparts.
+`codex update`, `codex reset`, `herdr update` and `herdr reset` do the same
+as their `claude` counterparts.
 
 `update` and `reset` are the only words airlock takes; `update` therefore
 rebuilds the image instead of reaching Claude Code's own updater. Everything
@@ -111,14 +115,38 @@ image, because a container keeps the image it was built from. A container also
 keeps the flags it was created with — mounts, capabilities, `COLORTERM` — so an
 airlock newer than the container replaces it instead of restarting it.
 
+## Codex
+
+`codex` in a project folder starts [Codex](https://github.com/openai/codex) in
+a third container, `airlock-codex-<name>-<hash>`, with the same rules, mounts,
+ports and home as the Claude Code one. It is installed from Codex's own
+release binary, so `claude update` and `codex update` pick up a new version.
+
+Your real `~/.codex` is mounted read-write into every airlock container, like
+`~/.claude`: login, `config.toml` and sessions are shared with your Mac, and
+`codex` typed in a herdr pane or in the Claude Code container's shell finds
+them too. If you are logged in on the Mac already, you are logged in here.
+
+To log in from inside, use `codex login --device-auth`. The default browser
+login sends your browser back to a server Codex starts on `localhost:1455`
+in the container, which your Mac's browser cannot reach.
+
+Resuming works like it does for Claude Code: Codex files its sessions by date
+under `~/.codex/sessions` and records the folder inside each one. If one was
+started in this folder, the entrypoint runs `codex resume --last`; if none
+was, a plain `codex`. Any argument of your own starts what you asked for.
+
+The same caveat as for `~/.claude` applies: the container can change
+`~/.codex`, and with it what Codex on your Mac runs.
+
 ## herdr
 
 `herdr` in a project folder starts [herdr](https://github.com/ogulcancelik/herdr)
-in a second container, `airlock-herdr-<name>-<hash>`, with the same rules,
+in a container of its own, `airlock-herdr-<name>-<hash>`, with the same rules,
 mounts and home as the Claude Code one. Its panes open the container's zsh, so
-`claude` typed in a pane is the Claude Code inside the container — no nested
-containers, no Podman inside. Both containers can run side by side in the same
-folder.
+`claude` or `codex` typed in a pane runs inside the container — no nested
+containers, no Podman inside. All three containers can run side by side in the
+same folder.
 
 herdr normally keeps its server running after the client detaches. In airlock
 the client is the container's main process, so detaching or closing the
@@ -168,9 +196,9 @@ the container could create it — which is why the worst it could do with that
 is open a port on your Mac's localhost.
 
 A container keeps the ports it was created with, so when the list changes the
-next `claude` replaces the container instead of restarting it. Both `claude`
-and `herdr` publish the same ports, so with ports in `.airlock` only one of
-the two can run in a folder at a time.
+next `claude` replaces the container instead of restarting it. `claude`,
+`codex` and `herdr` all publish the same ports, so with ports in `.airlock`
+only one of them can run in a folder at a time.
 
 ## Security model
 
@@ -186,7 +214,8 @@ that one login and one set of settings serve every folder, which means the
 container can change it — including writing a hook that your Mac would run the
 next time you start Claude Code outside the container. That is the price of
 sharing it; mount it read-only and Claude Code cannot log in or write a
-session.
+session. The same goes for `~/.codex`, whose `config.toml` can name commands
+Codex on your Mac would run.
 
 Every start — the first one and every restart — runs the image entrypoint
 with `CAP_NET_ADMIN` and `CAP_SETPCAP`, in a fresh network namespace. It runs
@@ -216,7 +245,7 @@ cannot get them back and cannot touch the rules. Both are needed: the
 bounding set only limits what a later exec can gain, not what a process
 already holds, and Podman hands the capabilities over in exactly the sets it
 does not cover. `CAP_SETPCAP` is what allows the drop itself. If `nft` fails,
-the entrypoint exits and Claude never starts.
+the entrypoint exits and neither Claude Code nor Codex ever starts.
 
 DNS uses `9.9.9.9` and `1.1.1.1` because your router's resolver sits in a
 blocked range. IPv6 is off inside the container. Files created in the container
