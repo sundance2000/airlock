@@ -1,7 +1,12 @@
 #!/bin/sh
 # Put the egress rules up while we still have NET_ADMIN, then drop that
-# capability for good - not even sudo can get it back - and become the user.
+# capability for good - not even sudo can get it back.
 # If the rules fail to apply, the container exits before Claude ever starts.
+#
+# This does not run as root: with --userns keep-id Podman starts it as uid
+# 1000 and hands it the added capabilities in its ambient and inheritable
+# sets. That is where they have to be cleared, because the bounding set only
+# limits what a later exec can gain, not what a process already holds.
 set -e
 nft -f /etc/airlock/egress.nft
 
@@ -16,8 +21,12 @@ if [ "$#" -eq 1 ] && [ "$1" = claude ]; then
     fi
 fi
 
-# Dropping capabilities needs CAP_SETPCAP, which is why the container is
-# started with it. --keep-groups, not --init-groups: setgroups() is denied
-# inside a rootless user namespace, and every other group option calls it.
+# - inh/ambient -all: nothing survives into the command, so it runs with no
+#   capabilities at all.
+# - bounding set: sudo's root can never get NET_ADMIN or NET_RAW back, nor
+#   SETPCAP, which the drop itself needs and so is the container started with.
+# --keep-groups, not --init-groups: setgroups() is denied inside a rootless
+# user namespace, and every other group option calls it.
 exec setpriv --reuid=1000 --regid=1000 --keep-groups \
-    --bounding-set=-net_admin,-net_raw -- "$@"
+    --inh-caps=-all --ambient-caps=-all \
+    --bounding-set=-net_admin,-net_raw,-setpcap -- "$@"

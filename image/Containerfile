@@ -73,6 +73,6 @@ COPY egress.nft /etc/airlock/egress.nft
 COPY entrypoint /usr/local/bin/airlock-entrypoint
 RUN chmod 0755 /usr/local/bin/airlock-entrypoint
 
-# Starts as root for the rules, drops to uid 1000 for everything after.
+# Puts up the rules, then drops every capability before running the command.
 ENTRYPOINT ["/usr/local/bin/airlock-entrypoint"]
 CMD ["claude"]

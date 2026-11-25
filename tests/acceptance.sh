@@ -6,19 +6,25 @@ repo_dir=$(cd -P "$(dirname "$0")/.." && pwd)              # this checkout
 image_name=localhost/airlock:latest                        # the same image airlock uses
 project_dir="$HOME/airlock-test-$$"                        # throwaway project directory
 failed=0                                                   # 1 once a check fails
+extra=()                                                   # more podman flags for in_container
+
+# The flags bin/airlock starts its containers with. SETPCAP is what lets the
+# entrypoint drop capabilities; without it the container exits at once.
+airlock_flags=(
+    --userns "keep-id:uid=1000,gid=1000"
+    --cap-add NET_ADMIN,SETPCAP
+    --dns 9.9.9.9 --dns 1.1.1.1
+    --sysctl net.ipv6.conf.all.disable_ipv6=1
+)
 
 ok()  { printf '  ok    %s\n' "$1"; }
 bad() { printf '  FAIL  %s\n' "$1"; failed=1; }
 
 # A throwaway container with the same flags bin/airlock uses, running $1 in zsh.
 in_container() {
-    podman run --rm -i \
-        --userns "keep-id:uid=1000,gid=1000" \
-        --cap-add NET_ADMIN \
-        --dns 9.9.9.9 --dns 1.1.1.1 \
-        --sysctl net.ipv6.conf.all.disable_ipv6=1 \
+    podman run --rm -i "${airlock_flags[@]}" \
         -v "$project_dir:$project_dir" -w "$project_dir" \
-        "$image_name" zsh -c "$1"
+        ${extra[@]+"${extra[@]}"} "$image_name" zsh -c "$1"
 }
 
 # $1 description, $2 expected (pass|fail), $3 command inside the container
@@ -32,6 +38,13 @@ mkdir -p "$project_dir"
 trap 'rm -rf "$project_dir"' EXIT
 podman image exists "$image_name" || podman build -t "$image_name" -f "$repo_dir/image/Containerfile" "$repo_dir/image"
 
+# Every check that expects a failure would pass with a container that does
+# not start at all, so make sure one does before believing any of them.
+if ! start_error=$(in_container true 2>&1); then
+    printf 'a container does not even start, so no check would mean anything:\n%s\n' "$start_error" >&2
+    exit 1
+fi
+
 echo "network"
 check "internet reachable"          pass "curl -sSI -m 10 https://api.anthropic.com"
 check "gvproxy host blocked"        fail "curl -m 3 http://192.168.127.254"
@@ -39,10 +52,51 @@ check "host.containers.internal blocked" fail "curl -m 3 http://host.containers.
 check "private 10/8 blocked"        fail "curl -m 3 http://10.0.0.1"
 check "tailscale range blocked"     fail "curl -m 3 http://100.64.0.1"
 
+echo "ports"
+# A published port has to answer through the egress rules, whose private
+# ranges include the gateway the connection comes in from.
+port_container="airlock-test-port-$$"
+podman run -d --rm --name "$port_container" "${airlock_flags[@]}" \
+    -p 127.0.0.1:18080:8000 \
+    "$image_name" python3 -m http.server 8000 >/dev/null
+published=fail
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -fsS -m 2 -o /dev/null http://127.0.0.1:18080/; then published=pass; break; fi
+    sleep 1
+done
+if [ "$published" = pass ]; then ok "published port answers"; else bad "published port answers"; fi
+
+# Only replies get out that way. The peer that request came from, as the
+# server logged it, must stay closed to a connection the container opens.
+peer=$(podman logs "$port_container" 2>&1 | awk '/"GET \//{print $1; exit}')
+if [ -z "$peer" ]; then
+    bad "peer of the request is closed to the container (no request logged)"
+elif podman exec --user 1000:1000 "$port_container" \
+        curl -sS -m 3 -o /dev/null "http://$peer:18080/" >/dev/null 2>&1; then
+    bad "peer of the request ($peer) is closed to the container"
+else
+    ok "peer of the request ($peer) is closed to the container"
+fi
+podman rm -f "$port_container" >/dev/null 2>&1
+
+echo "settings"
+# .airlock is mounted read-only over itself, as bin/airlock does it.
+printf 'port 3000\n' > "$project_dir/.airlock"
+extra=(-v "$project_dir/.airlock:$project_dir/.airlock:ro")
+check ".airlock cannot be written"     fail "echo 'port 22' >> .airlock"
+check "not even with sudo"             fail "sudo sh -c 'echo port 22 >> .airlock'"
+check ".airlock cannot be replaced"    fail "echo 'port 22' > new && mv -f new .airlock"
+check ".airlock cannot be removed"     fail "rm -f .airlock && test ! -e .airlock"
+check ".airlock cannot be unmounted"   fail "sudo umount .airlock"
+extra=()
+
 echo "privileges"
 check "runs as uid 1000"            pass "test \$(id -u) -eq 1000"
-check "cannot flush the rules"      fail "sudo nft flush ruleset"
+check "holds no capabilities"       pass "test \$(grep -Ec '^Cap(Inh|Prm|Eff|Amb):[[:space:]]+0+\$' /proc/self/status) -eq 4"
+check "cannot flush the rules"      fail "nft flush ruleset"
+check "not even with sudo"          fail "sudo nft flush ruleset"
 check "cannot even read them"       fail "sudo nft list ruleset"
+check "sudo gets no NET_ADMIN"      pass "sudo setpriv --dump | grep 'Capability bounding set:' | grep -vq net_admin"
 check "sudo otherwise works"        pass "sudo -n true"
 
 echo "tools"

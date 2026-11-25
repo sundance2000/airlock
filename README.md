@@ -40,13 +40,16 @@ first in your `PATH` — the installer warns you if it does not.
 | `herdr` | start herdr here, in a container of its own |
 | `claude update` | rebuild the image to pick up new tool versions |
 | `claude reset` | delete this folder's containers and home |
+| `airlock add port 3000` | publish a port, see [Ports](#ports) |
+| `airlock remove port 3000` | and take it back |
 
 `herdr update` and `herdr reset` do the same as their `claude` counterparts.
 
 `update` and `reset` are the only words airlock takes; `update` therefore
 rebuilds the image instead of reaching Claude Code's own updater. Everything
 else is passed through unchanged, `claude mcp list` and `claude --model opus`
-included.
+included. `add port` and `remove port` only work as `airlock`, so that
+`claude add a login button` still reaches Claude Code.
 
 ## Containers that stop with the terminal
 
@@ -138,6 +141,37 @@ on your Mac. Settings in it that point at Mac paths, such as a Homebrew
 and an entry into `~/.claude/settings.json`. Both are shared with your Mac, so
 whichever side installs it, the other side runs the same hook too.
 
+## Ports
+
+Nothing in the container is reachable from outside unless you publish it. A
+file named `.airlock` in the project folder lists the ports, one per line:
+
+```
+# a dev server, the same port on both sides
+port 3000
+# Mac port 8080 to container port 80
+port 8080:80
+```
+
+`airlock add port 3000 8080:80` and `airlock remove port 3000` edit it for
+you and refuse what would not work: a Mac port taken twice, a port out of
+range, an address. Other lines and comments are left as they are.
+
+They are published on the Mac's `127.0.0.1` only, never on the LAN, and there
+is no way to ask for anything else. The service inside has to listen on
+`0.0.0.0`, not `127.0.0.1`: the connection arrives over the container's
+network interface, not its loopback.
+
+The file belongs to you, not to the container: airlock mounts it read-only
+over itself, so nothing running inside can add a port. If it does not exist,
+the container could create it — which is why the worst it could do with that
+is open a port on your Mac's localhost.
+
+A container keeps the ports it was created with, so when the list changes the
+next `claude` replaces the container instead of restarting it. Both `claude`
+and `herdr` publish the same ports, so with ports in `.airlock` only one of
+the two can run in a folder at a time.
+
 ## Security model
 
 What it protects against: accidents and curiosity. An over-eager agent cannot
@@ -154,20 +188,35 @@ next time you start Claude Code outside the container. That is the price of
 sharing it; mount it read-only and Claude Code cannot log in or write a
 session.
 
-Every start — the first one and every restart — runs the image entrypoint as
-root with `CAP_NET_ADMIN` and `CAP_SETPCAP`, in a fresh network namespace:
+Every start — the first one and every restart — runs the image entrypoint
+with `CAP_NET_ADMIN` and `CAP_SETPCAP`, in a fresh network namespace. It runs
+as uid 1000, not root: with `--userns keep-id` Podman starts it as you and
+puts the two capabilities in its ambient and inheritable sets.
 
 ```sh
 nft -f /etc/airlock/egress.nft
 exec setpriv --reuid=1000 --regid=1000 --keep-groups \
-    --bounding-set=-net_admin,-net_raw -- "$@"
+    --inh-caps=-all --ambient-caps=-all \
+    --bounding-set=-net_admin,-net_raw,-setpcap -- "$@"
 ```
 
 The rules in `image/egress.nft` reject every private range (RFC1918, CGNAT,
-link-local, loopback, multicast and the IPv6 equivalents). `CAP_SETPCAP` is
-what allows the drop itself. Dropping the two capabilities from the **bounding
-set** is permanent and inherited by every later process, so `sudo` inside the
-container cannot get them back and cannot touch the rules. If `nft` fails, the entrypoint exits and Claude never starts.
+link-local, loopback, multicast and the IPv6 equivalents). The one exception
+is replies on connections that came in through a published port: they go back
+to Podman's gateway, which is a private address. The rule takes only packets
+in the reply direction of a connection the other side opened
+(`ct direction reply`), so a connection the container opens itself never
+matches it.
+
+After the rules, two drops. Clearing the inheritable and ambient sets means
+the command — Claude Code, herdr, your shell — runs with no capabilities at
+all. Removing `NET_ADMIN`, `NET_RAW` and `SETPCAP` from the **bounding set**
+is permanent and inherited by every later process, so even `sudo`'s root
+cannot get them back and cannot touch the rules. Both are needed: the
+bounding set only limits what a later exec can gain, not what a process
+already holds, and Podman hands the capabilities over in exactly the sets it
+does not cover. `CAP_SETPCAP` is what allows the drop itself. If `nft` fails,
+the entrypoint exits and Claude never starts.
 
 DNS uses `9.9.9.9` and `1.1.1.1` because your router's resolver sits in a
 blocked range. IPv6 is off inside the container. Files created in the container
@@ -180,8 +229,9 @@ ordinary internet traffic and is not covered by these rules.
 ## Tests
 
 `tests/acceptance.sh` checks the above against real containers: internet up,
-private ranges down, `sudo nft flush ruleset` denied, mount isolation, file
-ownership. It starts its own throwaway containers with the same flags, so it
+private ranges down, a published port answering while its peer stays closed
+to the container, `.airlock` read-only inside, `sudo nft flush ruleset`
+denied, mount isolation, file ownership. It starts its own throwaway containers with the same flags, so it
 does not touch any container of yours. `shellcheck` runs in CI.
 
 ## License
