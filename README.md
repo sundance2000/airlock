@@ -98,8 +98,10 @@ Two directories hold the rest:
 
 ```
 ~/.local/share/airlock/
-├── image/     Containerfile, entrypoint and egress.nft, put there by install.sh
-└── <hash>/    -> ~ in this folder's container: shell history, pip --user
+├── image/            Containerfile, entrypoint and egress.nft, put there by install.sh
+├── codex-packages/   Codex's server copy, for every container
+└── <hash>/           -> ~ in this folder's container: shell history, pip --user,
+                      Codex's server state in .codex-server
 ```
 
 `bin/airlock` reads the image definition from that one absolute path, so
@@ -126,6 +128,16 @@ Your real `~/.codex` is mounted read-write into every airlock container, like
 `~/.claude`: login, `config.toml` and sessions are shared with your Mac, and
 `codex` typed in a herdr pane or in the Claude Code container's shell finds
 them too. If you are logged in on the Mac already, you are logged in here.
+
+Three directories in it are the exception, because they belong to Codex's
+background server, not to you: `packages`, where it keeps the copy of Codex
+it runs from, and `app-server-daemon` and `app-server-control`, its pid files,
+locks and socket links. In the container that copy is a Linux binary and the
+processes are the container's, so on the Mac they would be a foreign binary
+and stale locks. airlock mounts its own directories over those three: the
+copy under `~/.local/share/airlock/codex-packages`, shared by every folder,
+and the rest in the folder's container home. On the Mac they stay as they
+are, empty if nothing else put anything there.
 
 To log in from inside, use `codex login --device-auth`. The default browser
 login sends your browser back to a server Codex starts on `localhost:1455`
