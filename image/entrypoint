@@ -1,7 +1,7 @@
 #!/bin/sh
 # Put the egress rules up while we still have NET_ADMIN, then drop that
 # capability for good - not even sudo can get it back.
-# If the rules fail to apply, the container exits before Claude ever starts.
+# If the rules fail to apply, the container exits before the agent ever starts.
 #
 # This does not run as root: with --userns keep-id Podman starts it as uid
 # 1000 and hands it the added capabilities in its ambient and inheritable
@@ -18,6 +18,15 @@ if [ "$#" -eq 1 ] && [ "$1" = claude ]; then
     sessions="/home/claude/.claude/projects/$(pwd | tr -c 'a-zA-Z0-9' '-')"
     if ls "$sessions"/*.jsonl >/dev/null 2>&1; then
         set -- claude --continue
+    fi
+fi
+
+# The same for Codex. It files sessions by date, not by folder, and records
+# the folder in the first line of each one; `codex resume --last` picks the
+# newest one for the working directory.
+if [ "$#" -eq 1 ] && [ "$1" = codex ]; then
+    if grep -rqsF "\"cwd\":\"$(pwd)\"" /home/claude/.codex/sessions; then
+        set -- codex resume --last
     fi
 fi
 

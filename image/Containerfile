@@ -26,7 +26,7 @@ RUN printf '%s\n' \
       > /etc/zsh/zshrc
 
 # `airlock update` passes a new value here to reinstall Claude Code, and with
-# it everything below: oh-my-posh, rtk and herdr.
+# it everything below: Codex, oh-my-posh, rtk and herdr.
 ARG rebuild=0
 # Native install, no node and no npm. It lands outside /home/claude because
 # that path is a mount at runtime.
@@ -34,6 +34,17 @@ RUN mkdir -p /opt/claude \
  && curl -fsSL https://claude.ai/install.sh | HOME=/opt/claude bash \
  && ln -sf /opt/claude/.local/bin/claude /usr/local/bin/claude \
  && claude --version
+
+# Codex through its standalone installer - again no node and no npm. The
+# bare binary from the GitHub release is not enough: it refuses to start
+# without the package the installer lays out around it in
+# $CODEX_HOME/packages/standalone. That is ~/.codex by default, which the
+# runtime mount replaces with the Mac's, so the package goes to /opt/codex
+# like Claude Code's, and only the link to it into /usr/local/bin.
+RUN curl -fsSL https://chatgpt.com/codex/install.sh \
+      | HOME=/opt/codex CODEX_HOME=/opt/codex CODEX_INSTALL_DIR=/usr/local/bin \
+        CODEX_NON_INTERACTIVE=1 sh \
+ && codex --version
 
 # oh-my-posh, taken from its release rather than through its install script,
 # which wants to write into $HOME. dpkg prints the same architecture names the
