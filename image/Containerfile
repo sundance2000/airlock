@@ -35,14 +35,15 @@ RUN mkdir -p /opt/claude \
  && ln -sf /opt/claude/.local/bin/claude /usr/local/bin/claude \
  && claude --version
 
-# Codex, the standalone musl build from its release - again no node and no
-# npm. uname -m gives the names the project uses for its assets: aarch64 and
-# x86_64. The tarball holds one binary named after the target.
-RUN mkdir /tmp/codex \
- && curl -fsSL "https://github.com/openai/codex/releases/latest/download/codex-$(uname -m)-unknown-linux-musl.tar.gz" \
-      | tar -xz -C /tmp/codex \
- && install -m 0755 /tmp/codex/codex-* /usr/local/bin/codex \
- && rm -rf /tmp/codex \
+# Codex through its standalone installer - again no node and no npm. The
+# bare binary from the GitHub release is not enough: it refuses to start
+# without the package the installer lays out around it in
+# $CODEX_HOME/packages/standalone. That is ~/.codex by default, which the
+# runtime mount replaces with the Mac's, so the package goes to /opt/codex
+# like Claude Code's, and only the link to it into /usr/local/bin.
+RUN curl -fsSL https://chatgpt.com/codex/install.sh \
+      | HOME=/opt/codex CODEX_HOME=/opt/codex CODEX_INSTALL_DIR=/usr/local/bin \
+        CODEX_NON_INTERACTIVE=1 sh \
  && codex --version
 
 # oh-my-posh, taken from its release rather than through its install script,
